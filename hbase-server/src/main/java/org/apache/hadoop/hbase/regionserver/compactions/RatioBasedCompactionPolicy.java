@@ -130,9 +130,14 @@ public class RatioBasedCompactionPolicy extends SortedCompactionPolicy {
    * Additional Note: If fileSizes.size() >> maxFilesToCompact, we will recurse on compact().
    * Consider the oldest files first to avoid a situation where we always compact
    * [end-threshold,end). Then, the last file becomes an aggregate of the previous compactions.
-   * normal skew: older ----> newer (increasing seqID) _ | | _ | | | | _ --|-|- |-|-
-   * |-|---_-------_------- minCompactSize | | | | | | | | _ | | | | | | | | | | | | | | | | | | | |
-   * | | | | | |
+   * normal skew: older ----> newer (increasing seqID)
+   *    _
+   *   | |  _
+   *   | | | |  _
+   * --|-|-|-|-|-|---_-------_------- minCompactSize
+   *   | | | | | |  | |  _  | |
+   *   | | | | | |  | | | | | |
+   *   | | | | | |  | | | | | |
    * @param candidates pre-filtrate
    * @return filtered subset
    */

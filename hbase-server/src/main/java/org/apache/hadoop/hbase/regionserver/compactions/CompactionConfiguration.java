@@ -203,13 +203,13 @@ public class CompactionConfiguration {
     return maxCompactSize;
   }
 
-  /** Returns upper bound on number of files to be included in minor compactions */
+  /** Returns lower bound on number of files to be included in minor compactions */
   public int getMinFilesToCompact() {
     return minFilesToCompact;
   }
 
   /**
-   * Set upper bound on number of files to be included in minor compactions
+   * Set lower bound on number of files to be included in minor compactions
    * @param threshold value to set to
    */
   public void setMinFilesToCompact(int threshold) {

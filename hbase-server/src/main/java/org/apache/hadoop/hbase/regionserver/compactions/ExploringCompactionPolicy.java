@@ -17,8 +17,13 @@
  */
 package org.apache.hadoop.hbase.regionserver.compactions;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
@@ -34,6 +39,7 @@ import org.slf4j.LoggerFactory;
 @InterfaceAudience.Private
 public class ExploringCompactionPolicy extends RatioBasedCompactionPolicy {
   private static final Logger LOG = LoggerFactory.getLogger(ExploringCompactionPolicy.class);
+  private File compactionRecordFile;
 
   /**
    * Constructor for ExploringCompactionPolicy.
@@ -43,6 +49,14 @@ public class ExploringCompactionPolicy extends RatioBasedCompactionPolicy {
   public ExploringCompactionPolicy(final Configuration conf,
     final StoreConfigInformation storeConfigInfo) {
     super(conf, storeConfigInfo);
+    compactionRecordFile = new File("/tmp/default-compaction-record");
+    if (!compactionRecordFile.exists()) {
+      try {
+        compactionRecordFile.createNewFile();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    }
   }
 
   @Override
@@ -74,9 +88,9 @@ public class ExploringCompactionPolicy extends RatioBasedCompactionPolicy {
         if (potentialMatchFiles.size() < minFiles) {
           continue;
         }
-        if (potentialMatchFiles.size() > maxFiles) {
-          continue;
-        }
+//        if (potentialMatchFiles.size() > maxFiles) {
+//          continue;
+//        }
 
         // Compute the total size of files that will
         // have to be read if this set of files is compacted.
@@ -111,12 +125,14 @@ public class ExploringCompactionPolicy extends RatioBasedCompactionPolicy {
     if (bestSelection.isEmpty() && mightBeStuck) {
       LOG.debug("Exploring compaction algorithm has selected " + smallest.size() + " files of size "
         + smallestSize + " because the store might be stuck");
+      compactionRecord("small:", smallest);
       return new ArrayList<>(smallest);
     }
     LOG.debug(
       "Exploring compaction algorithm has selected {}  files of size {} starting at "
         + "candidate #{} after considering {} permutations with {} in ratio",
       bestSelection.size(), bestSize, bestStart, opts, optsInRatio);
+    compactionRecord("best:", bestSelection);
     return new ArrayList<>(bestSelection);
   }
 
@@ -137,6 +153,25 @@ public class ExploringCompactionPolicy extends RatioBasedCompactionPolicy {
       }
     }
     return candidates;
+  }
+
+  private void compactionRecord(String flag, List<HStoreFile> bestSelection) {
+    try {
+      SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH:mm:ss");
+      BufferedWriter writer = new BufferedWriter(new FileWriter(compactionRecordFile, true));
+      StringBuilder line = new StringBuilder();
+      line.append(formatter.format(new Date()) + flag);
+      for (int i = 0; i < bestSelection.size(); i++) {
+        line.append(" ");
+        line.append(bestSelection.get(i).getReader().length());
+      }
+      line.append("\n");
+      writer.write(line.toString());
+      writer.flush();
+      writer.close();
+    } catch (IOException e) {
+      LOG.warn("Failed to record the compaction info for [{}].", e.getMessage(), e);
+    }
   }
 
   private boolean isBetterSelection(List<HStoreFile> bestSelection, long bestSize,

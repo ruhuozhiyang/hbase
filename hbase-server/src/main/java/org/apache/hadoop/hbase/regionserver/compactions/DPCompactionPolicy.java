@@ -10,10 +10,10 @@ import java.io.IOException;
 import java.util.Collection;
 
 @InterfaceAudience.Private
-public class DynamicPartitionCompactionPolicy extends CompactionPolicy {
-  private final static Logger LOG = LoggerFactory.getLogger(DynamicPartitionCompactionPolicy.class);
+public class DPCompactionPolicy extends CompactionPolicy {
+  private final static Logger LOG = LoggerFactory.getLogger(DPCompactionPolicy.class);
 
-  public DynamicPartitionCompactionPolicy(Configuration conf, StoreConfigInformation storeConfigInfo) {
+  public DPCompactionPolicy(Configuration conf, StoreConfigInformation storeConfigInfo) {
     super(conf, storeConfigInfo);
   }
 

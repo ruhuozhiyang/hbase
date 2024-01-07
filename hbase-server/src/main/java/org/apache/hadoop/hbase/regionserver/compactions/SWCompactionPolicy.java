@@ -18,8 +18,8 @@ import java.util.Date;
 import java.util.List;
 
 @InterfaceAudience.Private
-public class SlidingWindowBasedCompactionPolicy extends RatioBasedCompactionPolicy {
-  private static final Logger LOG = LoggerFactory.getLogger(SlidingWindowBasedCompactionPolicy.class);
+public class SWCompactionPolicy extends RatioBasedCompactionPolicy {
+  private static final Logger LOG = LoggerFactory.getLogger(SWCompactionPolicy.class);
   private static final String WINDOW_COMPACTION_POLICY_RATIO = "hbase.store.window.compaction.ratio";
   private static final String WINDOW_COMPACTION_POLICY_THROTTLE = "hbase.store.window.compaction.throttle";
   private static final String COMPACTION_STATUS_RECORD_PATH = "hbase.store.window.compaction.record.path";
@@ -28,7 +28,7 @@ public class SlidingWindowBasedCompactionPolicy extends RatioBasedCompactionPoli
   private final int throttle;
   private final File compactionRecordFile;
   private final int multi;
-  public SlidingWindowBasedCompactionPolicy(Configuration conf,
+  public SWCompactionPolicy(Configuration conf,
     StoreConfigInformation storeConfigInfo) {
     super(conf, storeConfigInfo);
     ratio = conf.getInt(WINDOW_COMPACTION_POLICY_RATIO, 2);

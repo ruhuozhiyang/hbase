@@ -2,15 +2,13 @@ package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableCollection;
+import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import java.io.IOException;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
-public class DPStoreFileManager implements StoreFileManager{
+public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.PartitionInformationProvider {
   @Override public void loadFiles(List<HStoreFile> storeFiles) {
 
   }
@@ -38,6 +36,36 @@ public class DPStoreFileManager implements StoreFileManager{
 
   @Override public Collection<HStoreFile> getStorefiles() {
     return null;
+  }
+
+  @Override
+  public byte[] getStartRow(int partitionIndex) {
+    return new byte[0];
+  }
+
+  @Override
+  public byte[] getEndRow(int partitionIndex) {
+    return new byte[0];
+  }
+
+  @Override
+  public List<HStoreFile> getLevel0Files() {
+    return null;
+  }
+
+  @Override
+  public List<byte[]> getPartitionBoundaries() {
+    return null;
+  }
+
+  @Override
+  public ArrayList<ImmutableList<HStoreFile>> getPartitions() {
+    return null;
+  }
+
+  @Override
+  public int getPartitionCount() {
+    return 0;
   }
 
   @Override public Collection<HStoreFile> getCompactedfiles() {

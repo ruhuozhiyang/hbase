@@ -19,33 +19,38 @@ import java.util.List;
 public class DPStoreEngine extends
   StoreEngine<DPStoreFlusher, DPCompactionPolicy, DPCompactor, DPStoreFileManager>{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreEngine.class);
-  @Override public boolean needsCompaction(List filesCompacting) {
-    return false;
+  private DPStoreConfig config;
+  @Override
+  public boolean needsCompaction(List filesCompacting) {
+    return this.compactionPolicy.needsCompactions(this.storeFileManager, filesCompacting);
   }
 
-  @Override public CompactionContext createCompaction() throws IOException {
+  @Override
+  public CompactionContext createCompaction() throws IOException {
     return new DPCompaction();
   }
 
   @Override
   protected void createComponents(Configuration conf, HStore store, CellComparator cellComparator)
     throws IOException {
-
+    this.config = new DPStoreConfig(conf, store);
   }
 
   private class DPCompaction extends CompactionContext {
 
-    @Override public List<HStoreFile> preSelect(List<HStoreFile> filesCompacting) {
+    @Override
+    public List<HStoreFile> preSelect(List<HStoreFile> filesCompacting) {
       return null;
     }
 
-    @Override public boolean select(List<HStoreFile> filesCompacting, boolean isUserCompaction,
+    @Override
+    public boolean select(List<HStoreFile> filesCompacting, boolean isUserCompaction,
       boolean mayUseOffPeak, boolean forceMajor) throws IOException {
-      request = compactionPolicy
       return false;
     }
 
-    @Override public List<Path> compact(ThroughputController throughputController, User user)
+    @Override
+    public List<Path> compact(ThroughputController throughputController, User user)
       throws IOException {
       return null;
     }

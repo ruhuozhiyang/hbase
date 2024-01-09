@@ -7,7 +7,6 @@ import org.apache.hadoop.hbase.regionserver.DPStoreFlusher;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
 import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
 import org.apache.hadoop.hbase.regionserver.StoreUtils;
-import org.apache.hadoop.hbase.regionserver.StripeStoreFlusher;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
@@ -129,9 +128,6 @@ public class DPCompactionPolicy extends CompactionPolicy {
      * @return End row. May be an open key.
      */
     byte[] getEndRow(int dpIndex);
-
-    /** Returns Level 0 files. */
-    List<HStoreFile> getLevel0Files();
 
     /** Returns All dp boundaries; including the open ones on both ends. */
     List<byte[]> getDPBoundaries();

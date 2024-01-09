@@ -53,8 +53,8 @@ public abstract class DPMultiFileWriter extends AbstractMultiFileWriter {
         LOG.debug("Write stripe metadata for " + writer.getPath().toString());
       }
       int index = existingWriters.indexOf(writer);
-      writer.appendFileInfo(DPStoreFileManager.STRIPE_START_KEY, boundaries.get(index));
-      writer.appendFileInfo(DPStoreFileManager.STRIPE_END_KEY, boundaries.get(index + 1));
+      writer.appendFileInfo(DPStoreFileManager.DP_START_KEY, boundaries.get(index));
+      writer.appendFileInfo(DPStoreFileManager.DP_END_KEY, boundaries.get(index + 1));
     } else {
       if (LOG.isDebugEnabled()) {
         LOG.debug("Skip writing stripe metadata for " + writer.getPath().toString());

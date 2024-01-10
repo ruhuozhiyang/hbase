@@ -5,6 +5,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
+import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequestImpl;
 import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.DPCompactor;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
@@ -34,25 +35,41 @@ public class DPStoreEngine extends
   protected void createComponents(Configuration conf, HStore store, CellComparator cellComparator)
     throws IOException {
     this.config = new DPStoreConfig(conf, store);
+    this.compactionPolicy = new DPCompactionPolicy(conf, store, this.config);
+    this.compactor = new DPCompactor(conf, store);
+    this.storeFileManager = new DPStoreFileManager(cellComparator, conf, this.config);
+    this.storeFlusher = new DPStoreFlusher(conf, store, this.compactionPolicy, this.storeFileManager);
   }
 
   private class DPCompaction extends CompactionContext {
+    private DPCompactionPolicy.DPCompactionRequest dPRequest = null;
 
     @Override
     public List<HStoreFile> preSelect(List<HStoreFile> filesCompacting) {
-      return null;
+      return compactionPolicy.preSelectFilesForCoprocessor(storeFileManager, filesCompacting);
     }
 
     @Override
     public boolean select(List<HStoreFile> filesCompacting, boolean isUserCompaction,
       boolean mayUseOffPeak, boolean forceMajor) throws IOException {
-      return false;
+      this.dPRequest =
+        compactionPolicy.selectCompaction(storeFileManager, filesCompacting, mayUseOffPeak);
+      return this.dPRequest != null;
+    }
+
+    @Override public void forceSelect(CompactionRequestImpl request) {
+      super.forceSelect(request);
+      if (this.dPRequest != null) {
+        this.dPRequest.setRequest(this.request);
+      } else {
+//        this.dPRequest = compactionPolicy.createEmptyRequest(storeFileManager, this.request);
+      }
     }
 
     @Override
     public List<Path> compact(ThroughputController throughputController, User user)
       throws IOException {
-      return null;
+      return this.dPRequest.execute(compactor, throughputController, user);
     }
   }
 }

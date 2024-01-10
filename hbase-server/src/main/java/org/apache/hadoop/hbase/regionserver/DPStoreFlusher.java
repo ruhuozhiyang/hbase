@@ -2,6 +2,7 @@ package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
@@ -25,10 +26,6 @@ public class DPStoreFlusher extends StoreFlusher{
     super(conf, store);
     this.policy = policy;
     this.stripes = stripes;
-  }
-
-  private static List<byte[]> getDPBoundariesByJLFX() {
-    return null;
   }
 
   private DPMultiFileWriter.WriterFactory createWriterFactory(MemStoreSnapshot snapshot,
@@ -56,7 +53,7 @@ public class DPStoreFlusher extends StoreFlusher{
 
     // Let policy select flush method.
     DPStoreFlusher.DPFlushRequest req =
-      this.policy.selectFlush(store.getComparator(), this.stripes);
+      this.policy.selectFlush(scanner, store.getComparator(), this.stripes);
 
     boolean success = false;
     DPMultiFileWriter mw = null;
@@ -92,14 +89,24 @@ public class DPStoreFlusher extends StoreFlusher{
   }
 
   public static class DPFlushRequest {
-
     protected final CellComparator comparator;
+    protected InternalScanner scanner;
 
     public DPFlushRequest(CellComparator comparator) {
       this.comparator = comparator;
     }
 
+    public DPFlushRequest(CellComparator comparator, InternalScanner scanner) {
+      this.comparator = comparator;
+      this.scanner = scanner;
+    }
+
     public DPMultiFileWriter createWriter() throws IOException {
+      List<byte[]> kvs = new ArrayList<>();
+      DPClusterAnalysis dpCA = new DPClusterAnalysis();
+      dpCA.loadData(kvs);
+      dpCA.setKernel(1);
+
       final List<byte[]> dpBoundaries = getDPBoundariesByJLFX();
       return new DPMultiFileWriter.BoundaryMultiWriter(comparator, dpBoundaries, null,
         null);

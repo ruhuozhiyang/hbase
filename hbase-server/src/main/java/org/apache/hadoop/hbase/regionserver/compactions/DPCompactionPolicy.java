@@ -3,12 +3,15 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.regionserver.DPStoreConfig;
 import org.apache.hadoop.hbase.regionserver.DPStoreFlusher;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
+import org.apache.hadoop.hbase.regionserver.InternalScanner;
 import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
 import org.apache.hadoop.hbase.regionserver.StoreUtils;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.User;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -17,13 +20,35 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.OPEN_KEY;
 
 @InterfaceAudience.Private
 public class DPCompactionPolicy extends CompactionPolicy {
   private final static Logger LOG = LoggerFactory.getLogger(DPCompactionPolicy.class);
+  private SWCompactionPolicy dPPolicy;
+  private DPStoreConfig dpStoreConfig;
 
-  public DPCompactionPolicy(Configuration conf, StoreConfigInformation storeConfigInfo) {
+  public DPCompactionPolicy(Configuration conf, StoreConfigInformation storeConfigInfo,
+    DPStoreConfig dpStoreConfig) {
     super(conf, storeConfigInfo);
+    this.dpStoreConfig = dpStoreConfig;
+    this.dPPolicy = new SWCompactionPolicy(conf, storeConfigInfo);
+  }
+
+  public List<HStoreFile> preSelectFilesForCoprocessor(DPInformationProvider di,
+    List<HStoreFile> filesCompacting) {
+    final ArrayList<HStoreFile> storefiles = new ArrayList<>(di.getStorefiles());
+    storefiles.removeAll(filesCompacting);
+    return storefiles;
+  }
+
+  public DPCompactionRequest createEmptyRequest(DPInformationProvider di,
+    CompactionRequestImpl request) {
+    // Treat as L0-ish compaction with fixed set of files, and hope for the best.
+    if (di.getDPCount() <= 0) {
+
+    }
+    return new DPCompactionRequest(request, di.getDPBoundaries());
   }
 
   public boolean needsCompactions(DPInformationProvider pi, List<HStoreFile> filesCompacting) {
@@ -45,11 +70,11 @@ public class DPCompactionPolicy extends CompactionPolicy {
     return compactionSize > comConf.getThrottlePoint();
   }
 
-  public DPStoreFlusher.DPFlushRequest selectFlush(CellComparator comparator,
-    DPCompactionPolicy.DPInformationProvider di) {
+  public DPStoreFlusher.DPFlushRequest selectFlush(InternalScanner scanner,
+    CellComparator comparator, DPCompactionPolicy.DPInformationProvider di) {
     if (di.getDPCount() == 0) {
       // No stripes - get stripes by cluster analysis, derive KVs per stripe.
-      return new DPStoreFlusher.DPFlushRequest(comparator);
+      return new DPStoreFlusher.DPFlushRequest(comparator, scanner);
     }
     // There are stripes - do according to the boundaries.
     return new DPStoreFlusher.BoundaryDPFlushRequest(comparator, di.getDPBoundaries());

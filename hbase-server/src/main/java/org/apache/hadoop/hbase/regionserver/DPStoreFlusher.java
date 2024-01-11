@@ -2,6 +2,7 @@ package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
@@ -102,10 +103,13 @@ public class DPStoreFlusher extends StoreFlusher{
     }
 
     public DPMultiFileWriter createWriter() throws IOException {
-      List<byte[]> kvs = new ArrayList<>();
+      List<Cell> kvs = new ArrayList<>();
+      List<byte[]> rowKeys = new ArrayList<>();
+      scanner.next(kvs);
+      kvs.stream().map(ele -> rowKeys.add(ele.getRowArray()));
       DPClusterAnalysis dpCA = new DPClusterAnalysis();
-      dpCA.loadData(kvs);
-      dpCA.setKernel(2);
+      dpCA.loadData(rowKeys);
+      dpCA.setKernel();
       dpCA.kMeans();
       List<byte[]> dpBoundaries = dpCA.getDpBoundaries();
       LOG.info("Get dpBoundaries:[{}] by DP Cluster Analysis.", dpBoundaries);

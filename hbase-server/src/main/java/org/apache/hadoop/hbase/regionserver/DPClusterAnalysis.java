@@ -56,7 +56,15 @@ public class DPClusterAnalysis {
   }
 
   public List<byte[]> getDpBoundaries() {
-    return this.initKernel;
+    List<byte[]> db = new ArrayList<>();
+    int d = Math.abs(Bytes.compareTo(this.initKernel.get(0), this.initKernel.get(1))) / 2;
+    byte[] r = this.initKernel.get(0);
+    r[0] = (byte) ((r[0] & 0xFF) + d);
+    db.add(r);
+    byte[] l = this.initKernel.get(0);
+    l[0] = (byte) ((l[0] & 0xFF) - d);
+    db.add(l);
+    return db;
   }
 
   private void deBug(List<byte[]> newKernels) {
@@ -110,24 +118,24 @@ public class DPClusterAnalysis {
     if (rowKeysMean2 != null) {
       newKernels.add(rowKeysMean2);
     }
-    Iterator<byte[]> i = clusters1.iterator();
-    byte[] min = i.next();
-    while (i.hasNext()) {
-      byte[] next = i.next();
-      if (Bytes.compareTo(next, min) < 0)
-        min = next;
-    }
-    Iterator<byte[]> j = clusters1.iterator();
-    byte[] max = j.next();
-    while (j.hasNext()) {
-      byte[] next = j.next();
-      if (Bytes.compareTo(next, max) > 0)
-        max = next;
-    }
-    System.out.println(min);
-    System.out.println("[" + new String(min) + "," + new String(max) + "]");
-    System.out.println("cluster1:" + clusters1.stream().map(ele -> new String(ele)).collect(Collectors.toList()));
-    System.out.println("cluster2:" + clusters2.stream().map(ele -> new String(ele)).collect(Collectors.toList()));
+//    Iterator<byte[]> i = clusters1.iterator();
+//    byte[] min = i.next();
+//    while (i.hasNext()) {
+//      byte[] next = i.next();
+//      if (Bytes.compareTo(next, min) < 0)
+//        min = next;
+//    }
+//    Iterator<byte[]> j = clusters1.iterator();
+//    byte[] max = j.next();
+//    while (j.hasNext()) {
+//      byte[] next = j.next();
+//      if (Bytes.compareTo(next, max) > 0)
+//        max = next;
+//    }
+//    System.out.println(min);
+//    System.out.println("[" + new String(min) + "," + new String(max) + "]");
+//    System.out.println("cluster1:" + clusters1.stream().map(ele -> new String(ele)).collect(Collectors.toList()));
+//    System.out.println("cluster2:" + clusters2.stream().map(ele -> new String(ele)).collect(Collectors.toList()));
     return newKernels;
   }
 
@@ -231,6 +239,8 @@ public class DPClusterAnalysis {
     dpCA.loadData(data);
     dpCA.setKernel();
     dpCA.kMeans();
+    System.out.println(new String(dpCA.getDpBoundaries().get(0)));
+    System.out.println(new String(dpCA.getDpBoundaries().get(1)));
 
 //    int a = 8;
 //    int b = 8772;

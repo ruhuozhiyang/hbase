@@ -1,10 +1,8 @@
 package org.apache.hadoop.hbase.regionserver;
 
-import org.apache.hadoop.hbase.filter.BinaryComparator;
 import org.apache.hadoop.hbase.util.Bytes;
+
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.stream.Collectors;
@@ -38,11 +36,11 @@ public class DPClusterAnalysis {
     System.out.println("initial kernel:" + new String(initKernel.get(0)) + " " + new String(initKernel.get(1)));
     while (true) {
       boolean stable = false;
-      List<byte[]> newKernels = iteration(initKernel);
+      List<byte[]> newKernels = iteration(this.initKernel);
       final List<String> newKernelsString =
         newKernels.stream().map(ele -> new String(ele)).collect(Collectors.toList());
       final List<String> initKernelString =
-        initKernel.stream().map(ele -> new String(ele)).collect(Collectors.toList());
+        this.initKernel.stream().map(ele -> new String(ele)).collect(Collectors.toList());
       deBug(newKernels);
       if (newKernelsString.containsAll(initKernelString)) {
         stable = true;
@@ -50,24 +48,35 @@ public class DPClusterAnalysis {
       if (stable) {
         break;
       } else {
-        initKernel = newKernels;
+        this.initKernel = newKernels;
       }
     }
   }
 
-  public List<byte[]> getDpBoundaries() {
-    List<byte[]> db = new ArrayList<>();
-    int d = Math.abs(Bytes.compareTo(this.initKernel.get(0), this.initKernel.get(1))) / 2;
-    byte[] r = this.initKernel.get(0);
-    r[0] = (byte) ((r[0] & 0xFF) + d);
-    db.add(r);
-    byte[] l = this.initKernel.get(0);
-    l[0] = (byte) ((l[0] & 0xFF) - d);
-    db.add(l);
-    return db;
+  public void setDpBoundaries() {
+    int kernelsDis = Math.abs(Bytes.compareTo(this.initKernel.get(0), this.initKernel.get(1))) / 2;
+    byte[] o = this.initKernel.get(0);
+    byte[] l = new byte[o.length];
+    for (int i = 0; i < o.length; i++) {
+      l[i] = o[i];
+    }
+    int nl = (l[0] & 0xFF) - kernelsDis;
+    l[0] = (byte) (nl < 48 ? 48 : nl);
+    this.dpBoundaries.add(l);
+
+    byte[] r = new byte[o.length];
+    for (int i = 0; i < o.length; i++) {
+      r[i] = o[i];
+    }
+    r[0] = (byte) ((r[0] & 0xFF) + kernelsDis);
+    this.dpBoundaries.add(r);
   }
 
-  private void deBug(List<byte[]> newKernels) {
+  public List<byte[]> getDpBoundaries() {
+    return this.dpBoundaries;
+  }
+
+  private static void deBug(List<byte[]> newKernels) {
     StringBuilder res = new StringBuilder();
     res.append("[");
 //    for (int i = 0; i < initKernel.size(); i++) {
@@ -239,8 +248,8 @@ public class DPClusterAnalysis {
     dpCA.loadData(data);
     dpCA.setKernel();
     dpCA.kMeans();
-    System.out.println(new String(dpCA.getDpBoundaries().get(0)));
-    System.out.println(new String(dpCA.getDpBoundaries().get(1)));
+    dpCA.setDpBoundaries();
+    deBug(dpCA.getDpBoundaries());
 
 //    int a = 8;
 //    int b = 8772;

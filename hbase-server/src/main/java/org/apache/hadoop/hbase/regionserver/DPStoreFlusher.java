@@ -4,13 +4,13 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,12 +21,12 @@ public class DPStoreFlusher extends StoreFlusher{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreFlusher.class);
   private final Object flushLock = new Object();
   private final DPCompactionPolicy policy;
-  private final DPCompactionPolicy.DPInformationProvider stripes;
+  private final DPCompactionPolicy.DPInformationProvider dPartitions;
   public DPStoreFlusher(Configuration conf, HStore store, DPCompactionPolicy policy,
-    DPStoreFileManager stripes) {
+    DPStoreFileManager dPartitions) {
     super(conf, store);
     this.policy = policy;
-    this.stripes = stripes;
+    this.dPartitions = dPartitions;
   }
 
   private DPMultiFileWriter.WriterFactory createWriterFactory(MemStoreSnapshot snapshot,
@@ -34,7 +34,6 @@ public class DPStoreFlusher extends StoreFlusher{
     return new DPMultiFileWriter.WriterFactory() {
       @Override
       public StoreFileWriter createWriter() throws IOException {
-        // XXX: it used to always pass true for includesTag, re-consider?
         return DPStoreFlusher.this.createWriter(snapshot, true, writerCreationTracker);
       }
     };
@@ -51,10 +50,11 @@ public class DPStoreFlusher extends StoreFlusher{
     }
 
     InternalScanner scanner = createScanner(snapshot.getScanners(), tracker);
+    InternalScanner scannerForCA = createScanner(snapshot.getScanners(), tracker);
 
     // Let policy select flush method.
     DPStoreFlusher.DPFlushRequest req =
-      this.policy.selectFlush(scanner, store.getComparator(), this.stripes);
+      this.policy.selectFlush(scannerForCA, store.getComparator(), this.dPartitions);
 
     boolean success = false;
     DPMultiFileWriter mw = null;
@@ -103,18 +103,37 @@ public class DPStoreFlusher extends StoreFlusher{
     }
 
     public DPMultiFileWriter createWriter() throws IOException {
-      List<Cell> kvs = new ArrayList<>();
-      List<byte[]> rowKeys = new ArrayList<>();
-      scanner.next(kvs);
-      kvs.stream().map(ele -> rowKeys.add(ele.getRowArray()));
-      DPClusterAnalysis dpCA = new DPClusterAnalysis();
-      dpCA.loadData(rowKeys);
-      dpCA.setKernel();
-      dpCA.kMeans();
-      List<byte[]> dpBoundaries = dpCA.getDpBoundaries();
-      LOG.info("Get dpBoundaries:[{}] by DP Cluster Analysis.", dpBoundaries);
+      List<byte[]> dpBoundaries = doCA2GetDPBoundaries();
+      LOG.info("Get dpBoundaries:{} by DP Cluster Analysis.", dpBoundaries.toString());
       return new DPMultiFileWriter.BoundaryMultiWriter(comparator, dpBoundaries, null,
         null);
+    }
+
+    private List<byte[]> doCA2GetDPBoundaries() throws IOException {
+      List<Cell> kvs = new ArrayList<>();
+      List<byte[]> rowKeys = new ArrayList<>();
+
+      boolean hasMore;
+      do {
+        hasMore = scanner.next(kvs);
+        if (!kvs.isEmpty()) {
+          for (Cell cell : kvs) {
+            KeyValue kv = (KeyValue) cell;
+            final byte[] rowArray = kv.getKey();
+            LOG.info("Key String:{}", kv.getKeyString());
+            byte[] rowArrayCopy = new byte[rowArray.length];
+            System.arraycopy(rowArray, 0, rowArrayCopy, 0, rowArray.length);
+            rowKeys.add(rowArrayCopy);
+          }
+          kvs.clear();
+        }
+      } while (hasMore);
+
+      DPClusterAnalysis dpCA = new DPClusterAnalysis();
+      dpCA.loadData(rowKeys);
+      dpCA.setKernels();
+      dpCA.kMeans();
+      return dpCA.getDpBoundaries();
     }
   }
 

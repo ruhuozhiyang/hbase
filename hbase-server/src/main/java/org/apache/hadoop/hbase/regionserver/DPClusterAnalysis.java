@@ -1,24 +1,62 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.hbase.util.Bytes;
-
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.stream.Collectors;
 
 public class DPClusterAnalysis {
   private List<byte[]> inData = new ArrayList<>();
-  private List<byte[]> initKernel = new ArrayList<>();
-  private List<byte[]> dpBoundaries = new ArrayList<>();
+  private List<byte[]> initKernel = new DPArrayList<>();
+  private List<byte[]> dpBoundaries = new DPArrayList<>();
 
   public void loadData(List<byte[]> data) {
     this.inData = data;
   }
 
-  public boolean setKernel() {
+  private class DPArrayList<E> extends ArrayList<E> {
+    @Override
+    public int indexOf(Object o) {
+      if (o instanceof byte[]) {
+        Object[] elementData = toArray();
+        if (o == null) {
+          for (int i = 0; i < elementData.length; i++) {
+            if (elementData[i]==null) {
+              return i;
+            }
+          }
+        } else {
+          for (int i = 0; i < elementData.length; i++) {
+            if (new String((byte[])o).equalsIgnoreCase(new String((byte[])elementData[i]))) {
+              return i;
+            }
+          }
+        }
+      }
+      return -1;
+    }
+
+    @Override public String toString() {
+      Iterator<E> it = iterator();
+      if (! it.hasNext())
+        return "[]";
+      StringBuilder sb = new StringBuilder();
+      sb.append('[');
+      for (;;) {
+        E e = it.next();
+        sb.append((e instanceof byte[]) ? new String((byte[]) e) : e);
+        if (! it.hasNext())
+          return sb.append(']').toString();
+        sb.append(',').append(' ');
+      }
+    }
+  }
+
+  public boolean setKernels() {
     int num = 2;
-    if (inData.size() == 0 || inData.size() < num) {
+    if (inData.size() < num) {
       return false;
     }
     final Random randomGen = new Random();
@@ -33,7 +71,7 @@ public class DPClusterAnalysis {
   }
 
   public void kMeans() {
-    System.out.println("initial kernel:" + new String(initKernel.get(0)) + " " + new String(initKernel.get(1)));
+    deBug(this.initKernel, "Initial Kernels");
     while (true) {
       boolean stable = false;
       List<byte[]> newKernels = iteration(this.initKernel);
@@ -41,7 +79,7 @@ public class DPClusterAnalysis {
         newKernels.stream().map(ele -> new String(ele)).collect(Collectors.toList());
       final List<String> initKernelString =
         this.initKernel.stream().map(ele -> new String(ele)).collect(Collectors.toList());
-      deBug(newKernels);
+      deBug(newKernels, "Current Kernels");
       if (newKernelsString.containsAll(initKernelString)) {
         stable = true;
       }
@@ -57,17 +95,13 @@ public class DPClusterAnalysis {
     int kernelsDis = Math.abs(Bytes.compareTo(this.initKernel.get(0), this.initKernel.get(1))) / 2;
     byte[] o = this.initKernel.get(0);
     byte[] l = new byte[o.length];
-    for (int i = 0; i < o.length; i++) {
-      l[i] = o[i];
-    }
+    System.arraycopy(o, 0, l, 0, o.length);
     int nl = (l[0] & 0xFF) - kernelsDis;
     l[0] = (byte) (nl < 48 ? 48 : nl);
     this.dpBoundaries.add(l);
 
     byte[] r = new byte[o.length];
-    for (int i = 0; i < o.length; i++) {
-      r[i] = o[i];
-    }
+    System.arraycopy(o, 0, r, 0, o.length);
     r[0] = (byte) ((r[0] & 0xFF) + kernelsDis);
     this.dpBoundaries.add(r);
   }
@@ -76,21 +110,13 @@ public class DPClusterAnalysis {
     return this.dpBoundaries;
   }
 
-  private static void deBug(List<byte[]> newKernels) {
+  private static void deBug(List<byte[]> kernelOrBoundary, String message) {
     StringBuilder res = new StringBuilder();
+    res.append(message).append(":");
     res.append("[");
-//    for (int i = 0; i < initKernel.size(); i++) {
-////      res.append(initKernel.get(i) == null ? "NULL" : initKernel.get(i));
-//      res.append(initKernel.get(i) == null ? "NULL" : new String(initKernel.get(i)));
-//      if (i < initKernel.size() - 1) {
-//        res.append(",");
-//      }
-//    }
-    res.append("]?=[");
-    for (int i = 0; i < newKernels.size(); i++) {
-//      res.append(newKernels.get(i) == null ? "NULL" : newKernels.get(i));
-      res.append(newKernels.get(i) == null ? "NULL" : new String(newKernels.get(i)));
-      if (i < newKernels.size() - 1) {
+    for (int i = 0; i < kernelOrBoundary.size(); i++) {
+      res.append(kernelOrBoundary.get(i) == null ? "NULL" : new String(kernelOrBoundary.get(i)));
+      if (i < kernelOrBoundary.size() - 1) {
         res.append(",");
       }
     }
@@ -152,8 +178,8 @@ public class DPClusterAnalysis {
     int index = 0;
     float smallDis = Integer.MAX_VALUE;
     for (int i = 0; i < kernels.size(); i++) {
-//      final float dis = getSimilarityRatio(new String(rowKey), new String(kernels.get(i)));
-      final int dis = get2RowKeysDistance(rowKey, kernels.get(i));
+//      float dis = getSimilarityRatio(new String(rowKey), new String(kernels.get(i)));
+      int dis = get2RowKeysDistance(rowKey, kernels.get(i));
       if (dis < smallDis) {
         smallDis = dis;
         index = i;
@@ -163,7 +189,6 @@ public class DPClusterAnalysis {
   }
 
   private int get2RowKeysDistance(byte[] a, byte[] b) {
-//    return Bytes.compareTo(a, b);
     return Math.abs(Bytes.compareTo(a, b));
   }
 
@@ -182,12 +207,11 @@ public class DPClusterAnalysis {
     }
     for (int i = 0; i < rowKeysMeanInt.length; i++) {
       rowKeysMeanByte[i] = (byte) (rowKeysMeanInt[i] / rowKeys.size());
-//      System.out.println(rowKeysMeanByte[i] & 0xFF);
     }
     return rowKeysMeanByte;
   }
 
-  private static String j(int length) {
+  private static String genString(int length) {
 //    String KeyString = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     String KeyString = "0123456789";
     int len = KeyString.length();
@@ -198,6 +222,7 @@ public class DPClusterAnalysis {
     return sb.toString();
   }
 
+  @Deprecated
   private float getSimilarityRatio(String str, String target) {
     int d[][];
     int n = str.length();
@@ -233,23 +258,29 @@ public class DPClusterAnalysis {
     List<byte[]> data = new ArrayList<>();
     Random random = new Random();
     for (int i = 0; i < 1000; i++) {
-      String a = j(random.nextInt(13));
-//      System.out.println(a);
+      String a = genString(random.nextInt(13) + 1);
       data.add(Bytes.toBytes(a));
-//      data.add(Bytes.toBytes(String.valueOf(i)));
+      data.add(Bytes.toBytes(String.valueOf(i)));
     }
-//    for (int i = 5000; i < 7000; i++) {
-//      data.add(Bytes.toBytes(String.valueOf(i)));
-//    }
-//    for (int i = 8000; i < 10000; i++) {
-//      data.add(Bytes.toBytes(String.valueOf(i)));
-//    }
+    for (int i = 5000; i < 7000; i++) {
+      data.add(Bytes.toBytes(String.valueOf(i)));
+    }
+    for (int i = 8000; i < 10000; i++) {
+      data.add(Bytes.toBytes(String.valueOf(i)));
+    }
     DPClusterAnalysis  dpCA = new DPClusterAnalysis();
     dpCA.loadData(data);
-    dpCA.setKernel();
+    dpCA.setKernels();
     dpCA.kMeans();
     dpCA.setDpBoundaries();
-    deBug(dpCA.getDpBoundaries());
+    deBug(dpCA.getDpBoundaries(), "CA Boundary");
+
+//    List<Integer> test = new ArrayList<>();
+//    test.add(1);
+//    test.add(2);
+//    test.add(3);
+//    final List<Integer> collect = test.stream().map(ele -> ele + 1).collect(Collectors.toList());
+//    System.out.println(collect);
 
 //    int a = 8;
 //    int b = 8772;

@@ -92,6 +92,24 @@ public class SWCompactionPolicy extends RatioBasedCompactionPolicy {
   }
 
   /**
+   * Select at least one file in the candidates list to compact, through choosing files from the
+   * head to the index that the accumulation length larger the max compaction size. This method is a
+   * supplementary of the selectSimpleCompaction() method, aims to make sure at least one file can
+   * be selected to compact, for compactions like L0 files, which need to compact all files and as
+   * soon as possible.
+   */
+  public List<HStoreFile> selectCompactFiles(final List<HStoreFile> candidates, boolean isOffpeak) {
+    long selectedSize = 0L;
+    for (int end = 0; end < candidates.size(); end++) {
+      selectedSize += candidates.get(end).getReader().length();
+      if (selectedSize >= comConf.getMaxCompactSize(isOffpeak)) {
+        return candidates.subList(0, end + 1);
+      }
+    }
+    return candidates;
+  }
+
+  /**
    * Find the total size of a list of store files.
    * @param potentialMatchFiles StoreFile list.
    * @return Sum of StoreFile.getReader().length();

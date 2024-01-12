@@ -10,10 +10,12 @@ import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.DPCompactor;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.User;
+import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.CONFIG)
@@ -34,7 +36,7 @@ public class DPStoreEngine extends
   @Override
   protected void createComponents(Configuration conf, HStore store, CellComparator cellComparator)
     throws IOException {
-    this.config = new DPStoreConfig(conf, store);
+    this.config = new DPStoreConfig(conf);
     this.compactionPolicy = new DPCompactionPolicy(conf, store, this.config);
     this.compactor = new DPCompactor(conf, store);
     this.storeFileManager = new DPStoreFileManager(cellComparator, conf, this.config);
@@ -54,6 +56,9 @@ public class DPStoreEngine extends
       boolean mayUseOffPeak, boolean forceMajor) throws IOException {
       this.dPRequest =
         compactionPolicy.selectCompaction(storeFileManager, filesCompacting, mayUseOffPeak);
+      this.request = (this.dPRequest == null)
+        ? new CompactionRequestImpl(new ArrayList<>())
+        : this.dPRequest.getRequest();
       return this.dPRequest != null;
     }
 
@@ -62,13 +67,15 @@ public class DPStoreEngine extends
       if (this.dPRequest != null) {
         this.dPRequest.setRequest(this.request);
       } else {
-//        this.dPRequest = compactionPolicy.createEmptyRequest(storeFileManager, this.request);
+        LOG.warn("DP store is forced to take an arbitrary file list and compact it.");
+        this.dPRequest = compactionPolicy.createEmptyRequest(storeFileManager, this.request);
       }
     }
 
     @Override
     public List<Path> compact(ThroughputController throughputController, User user)
       throws IOException {
+      Preconditions.checkArgument(this.dPRequest != null, "Cannot compact without selection");
       return this.dPRequest.execute(compactor, throughputController, user);
     }
   }

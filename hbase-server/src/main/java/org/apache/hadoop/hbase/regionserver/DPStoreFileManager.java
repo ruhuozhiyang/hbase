@@ -697,6 +697,10 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     return dpIndex == this.state.dpEndRows.length ? OPEN_KEY : this.state.dpEndRows[dpIndex];
   }
 
+  @Override public List<HStoreFile> getLevel0Files() {
+    return this.state.level0Files;
+  }
+
   @Override
   public List<byte[]> getDPBoundaries() {
     if (this.state.dpFiles.isEmpty()) {

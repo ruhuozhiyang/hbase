@@ -11,7 +11,6 @@ import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
 import org.apache.hadoop.hbase.regionserver.StoreUtils;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -20,7 +19,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.OPEN_KEY;
 
 @InterfaceAudience.Private
 public class DPCompactionPolicy extends CompactionPolicy {
@@ -44,21 +42,94 @@ public class DPCompactionPolicy extends CompactionPolicy {
 
   public DPCompactionRequest createEmptyRequest(DPInformationProvider di,
     CompactionRequestImpl request) {
-    // Treat as L0-ish compaction with fixed set of files, and hope for the best.
-    if (di.getDPCount() <= 0) {
-
+    if (di.getDPCount() > 0) {
+      return new DPCompactionRequest(request, di.getDPBoundaries());
     }
-    return new DPCompactionRequest(request, di.getDPBoundaries());
-  }
-
-  public boolean needsCompactions(DPInformationProvider pi, List<HStoreFile> filesCompacting) {
-    // Approximation on whether we need compaction.
-    return filesCompacting.isEmpty() && (StoreUtils.hasReferences(pi.getStorefiles()));
-  }
-
-  public DPCompactionRequest selectCompaction(DPInformationProvider pi,
-    List<HStoreFile> filesCompacting, boolean isOffpeak) throws IOException {
     return null;
+  }
+
+  public boolean needsCompactions(DPInformationProvider di, List<HStoreFile> filesCompacting) {
+    return filesCompacting.isEmpty() && (StoreUtils.hasReferences(di.getStorefiles())
+      || needsSingleDPartitionCompaction(di));
+  }
+
+  /**
+   * @param di StoreFileManager.
+   * @return Whether any dPartition potentially needs compaction.
+   */
+  protected boolean needsSingleDPartitionCompaction(DPInformationProvider di) {
+    int minFiles = this.dpStoreConfig.getDPartitionCompactMinFiles();
+    for (List<HStoreFile> dPartition : di.getDPs()) {
+      if (dPartition.size() >= minFiles) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public DPCompactionRequest selectCompaction(DPInformationProvider di,
+    List<HStoreFile> filesCompacting, boolean isOffpeak) throws IOException {
+    if (!filesCompacting.isEmpty()) {
+      LOG.info("Not selecting compaction: " + filesCompacting.size() + " files compacting");
+      return null;
+    }
+
+    Collection<HStoreFile> allFiles = di.getStorefiles();
+    if (StoreUtils.hasReferences(allFiles)) {
+      LOG.debug("There are references in the store; compacting all files");
+      DPCompactionRequest request =
+        new DPCompactionRequest(allFiles, di.getDPBoundaries());
+      request.getRequest().setAfterSplit(true);
+      return request;
+    }
+
+    return selectSingleDPCompaction(di, isOffpeak);
+  }
+
+  protected DPCompactionRequest selectSingleDPCompaction(DPInformationProvider di, boolean isOffpeak) {
+    ArrayList<ImmutableList<HStoreFile>> dPartitions = di.getDPs();
+    int bqIndex = -1;
+    List<HStoreFile> bqSelection = null;
+    int dPCount = dPartitions.size();
+    long bqTotalSize = -1;
+    for (int i = 0; i < dPCount; ++i) {
+      List<HStoreFile> selection = selectSimpleCompaction(dPartitions.get(i), isOffpeak, false);
+      if (selection.isEmpty()) continue;
+      long size = 0;
+      for (HStoreFile sf : selection) {
+        size += sf.getReader().length();
+      }
+      if (
+        bqSelection == null || selection.size() > bqSelection.size()
+          || (selection.size() == bqSelection.size() && size < bqTotalSize)
+      ) {
+        bqSelection = selection;
+        bqIndex = i;
+        bqTotalSize = size;
+      }
+    }
+    if (bqSelection == null) {
+      LOG.debug("No good compaction is possible in any DPartition.");
+      return null;
+    }
+    List<HStoreFile> filesToCompact = new ArrayList<>(bqSelection);
+    DPCompactionRequest req = new DPCompactionRequest(filesToCompact, di.getDPBoundaries());
+    if (filesToCompact.size() == dPartitions.get(bqIndex).size()) {
+      req.setMajorRange(di.getStartRow(bqIndex), di.getEndRow(bqIndex));
+    }
+    req.getRequest().setOffPeak(isOffpeak);
+    return req;
+  }
+
+  private List<HStoreFile> selectSimpleCompaction(List<HStoreFile> sfs, boolean isOffpeak,
+    boolean forceCompact) {
+    int minFilesLocal = this.dpStoreConfig.getDPartitionCompactMinFiles();
+    List<HStoreFile> selected =
+      this.dPPolicy.applyCompactionPolicy(sfs, false, isOffpeak, minFilesLocal);
+    if (forceCompact && (selected == null || selected.isEmpty()) && !sfs.isEmpty()) {
+      return this.dPPolicy.selectCompactFiles(sfs, isOffpeak);
+    }
+    return selected;
   }
 
   @Override public boolean shouldPerformMajorCompaction(Collection<HStoreFile> filesToCompact)
@@ -73,10 +144,8 @@ public class DPCompactionPolicy extends CompactionPolicy {
   public DPStoreFlusher.DPFlushRequest selectFlush(InternalScanner scanner,
     CellComparator comparator, DPCompactionPolicy.DPInformationProvider di) {
     if (di.getDPCount() == 0) {
-      // No stripes - get stripes by cluster analysis, derive KVs per stripe.
       return new DPStoreFlusher.DPFlushRequest(comparator, scanner);
     }
-    // There are stripes - do according to the boundaries.
     return new DPStoreFlusher.BoundaryDPFlushRequest(comparator, di.getDPBoundaries());
   }
 
@@ -153,6 +222,9 @@ public class DPCompactionPolicy extends CompactionPolicy {
      * @return End row. May be an open key.
      */
     byte[] getEndRow(int dpIndex);
+
+    /** Returns Level 0 files. */
+    List<HStoreFile> getLevel0Files();
 
     /** Returns All dp boundaries; including the open ones on both ends. */
     List<byte[]> getDPBoundaries();

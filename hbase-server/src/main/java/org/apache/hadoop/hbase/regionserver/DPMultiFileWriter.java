@@ -19,7 +19,6 @@ public abstract class DPMultiFileWriter extends AbstractMultiFileWriter {
   protected final CellComparator comparator;
   protected List<StoreFileWriter> existingWriters;
   protected List<byte[]> boundaries;
-
   /** Whether to write dp metadata */
   private boolean doWriteDPMetadata = true;
 
@@ -100,7 +99,6 @@ public abstract class DPMultiFileWriter extends AbstractMultiFileWriter {
   public static class BoundaryMultiWriter extends DPMultiFileWriter {
     private StoreFileWriter currentWriter;
     private byte[] currentWriterEndKey;
-
     private Cell lastCell;
     private long cellsInCurrentWriter = 0;
     private int majorRangeFromIndex = -1, majorRangeToIndex = -1;

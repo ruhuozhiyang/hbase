@@ -1008,8 +1008,8 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     double max = 0.0;
     for (ImmutableList<HStoreFile> dPFile : stateLocal.dpFiles) {
       int dPFileCount = dPFile.size();
-      double normCount = (double) (dPFileCount + delta - config.getStripeCompactMinFiles())
-        / (blockingFilePerStripe - config.getStripeCompactMinFiles());
+      double normCount = (double) (dPFileCount + delta - config.getDPartitionCompactMinFiles())
+        / (blockingFilePerStripe - config.getDPartitionCompactMinFiles());
       if (normCount >= 1.0) {
         // This could happen if stripe is not split evenly. Do not return values that larger than
         // 1.0 because we have not reached the blocking file count actually.

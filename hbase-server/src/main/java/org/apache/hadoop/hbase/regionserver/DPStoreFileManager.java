@@ -107,8 +107,8 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
   private void loadUnclassifiedStoreFiles(List<HStoreFile> storeFiles) {
     TreeMap<byte[], ArrayList<HStoreFile>> candidateStripes = new TreeMap<>(MAP_COMPARATOR);
     ArrayList<HStoreFile> level0Files = new ArrayList<>();
-    // Separate the files into tentative stripes; then validate. Currently, we rely on metadata.
-    // If needed, we could dynamically determine the stripes in future.
+    // Separate the files into tentative dPartitions; then validate. Currently, we rely on metadata.
+    // If needed, we could dynamically determine the dPartitions in the future.
     for (HStoreFile sf : storeFiles) {
       byte[] startRow = startOf(sf), endRow = endOf(sf);
       // Validate the range and put the files into place.

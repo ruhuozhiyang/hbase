@@ -56,8 +56,8 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     public byte[][] dpEndRows = new byte[0][];
     /**
      * Files by DP. Each element of the list corresponds to dpEndRow element with the same
-     * index, except the last one. Inside each list, the files are in reverse order by seqNum. Note
-     * that the length of this is one higher than that of dpEndKeys.
+     * index, except the last one. Inside each list, the files are in reverse order by seqNum.
+     * Note that the length of this is one higher than that of dpEndKeys.
      */
     public ArrayList<ImmutableList<HStoreFile>> dpFiles = new ArrayList<>();
     /** Level 0. The files are in reverse order by seqNum. */
@@ -105,7 +105,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
    * @param storeFiles Store files to add.
    */
   private void loadUnclassifiedStoreFiles(List<HStoreFile> storeFiles) {
-    TreeMap<byte[], ArrayList<HStoreFile>> candidateStripes = new TreeMap<>(MAP_COMPARATOR);
+    TreeMap<byte[], ArrayList<HStoreFile>> candidateDPartitions = new TreeMap<>(MAP_COMPARATOR);
     ArrayList<HStoreFile> level0Files = new ArrayList<>();
     // Separate the files into tentative dPartitions; then validate. Currently, we rely on metadata.
     // If needed, we could dynamically determine the dPartitions in the future.
@@ -121,19 +121,18 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
         insertFileIntoDPartition(level0Files, sf); // Bad metadata - goes to L0 also.
         ensureLevel0Metadata(sf);
       } else {
-        ArrayList<HStoreFile> stripe = candidateStripes.get(endRow);
-        if (stripe == null) {
-          stripe = new ArrayList<>();
-          candidateStripes.put(endRow, stripe);
+        ArrayList<HStoreFile> dPartition = candidateDPartitions.get(endRow);
+        if (dPartition == null) {
+          dPartition = new ArrayList<>();
+          candidateDPartitions.put(endRow, dPartition);
         }
-        insertFileIntoDPartition(stripe, sf);
+        insertFileIntoDPartition(dPartition, sf);
       }
     }
 
     boolean hasOverlaps = false;
-    byte[] expectedStartRow = null; // first stripe can start wherever
-    Iterator<Map.Entry<byte[], ArrayList<HStoreFile>>> entryIter =
-      candidateStripes.entrySet().iterator();
+    byte[] expectedStartRow = null; // first dPartition can start wherever
+    Iterator<Map.Entry<byte[], ArrayList<HStoreFile>>> entryIter = candidateDPartitions.entrySet().iterator();
     while (entryIter.hasNext()) {
       Map.Entry<byte[], ArrayList<HStoreFile>> entry = entryIter.next();
       ArrayList<HStoreFile> files = entry.getValue();
@@ -142,10 +141,10 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
         HStoreFile sf = files.get(i);
         byte[] startRow = startOf(sf);
         if (expectedStartRow == null) {
-          expectedStartRow = startRow; // ensure that first stripe is still consistent
+          expectedStartRow = startRow; // ensure that first dPartition is still consistent
         } else if (!rowEquals(expectedStartRow, startRow)) {
           hasOverlaps = true;
-          LOG.warn("Store file doesn't fit into the tentative stripes - expected to start at ["
+          LOG.warn("Store file doesn't fit into the tentative dPartitions - expected to start at ["
             + Bytes.toString(expectedStartRow) + "], but starts at [" + Bytes.toString(startRow)
             + "], to L0 it goes");
           HStoreFile badSf = files.remove(i);
@@ -154,10 +153,10 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
           --i;
         }
       }
-      // Check if any files from the candidate stripe are valid. If so, add a stripe.
+      // Check if any files from the candidate dPartition are valid. If so, add a dPartition.
       byte[] endRow = entry.getKey();
       if (!files.isEmpty()) {
-        expectedStartRow = endRow; // Next stripe must start exactly at that key.
+        expectedStartRow = endRow; // Next dPartition must start exactly at that key.
       } else {
         entryIter.remove();
       }
@@ -167,25 +166,25 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     // files are consistent, they might be coming from a split. We will treat the boundaries
     // as open keys anyway, and log the message.
     // If there were errors, we'll play it safe and dump everything into L0.
-    if (!candidateStripes.isEmpty()) {
-      HStoreFile firstFile = candidateStripes.firstEntry().getValue().get(0);
-      boolean isOpen = isOpen(startOf(firstFile)) && isOpen(candidateStripes.lastKey());
+    if (!candidateDPartitions.isEmpty()) {
+      HStoreFile firstFile = candidateDPartitions.firstEntry().getValue().get(0);
+      boolean isOpen = isOpen(startOf(firstFile)) && isOpen(candidateDPartitions.lastKey());
       if (!isOpen) {
         LOG.warn("The range of the loaded files does not cover full key space: from ["
           + Bytes.toString(startOf(firstFile)) + "], to ["
-          + Bytes.toString(candidateStripes.lastKey()) + "]");
+          + Bytes.toString(candidateDPartitions.lastKey()) + "]");
         if (!hasOverlaps) {
-          ensureEdgeStripeMetadata(candidateStripes.firstEntry().getValue(), true);
-          ensureEdgeStripeMetadata(candidateStripes.lastEntry().getValue(), false);
+          ensureEdgeStripeMetadata(candidateDPartitions.firstEntry().getValue(), true);
+          ensureEdgeStripeMetadata(candidateDPartitions.lastEntry().getValue(), false);
         } else {
           LOG.warn("Inconsistent files, everything goes to L0.");
-          for (ArrayList<HStoreFile> files : candidateStripes.values()) {
+          for (ArrayList<HStoreFile> files : candidateDPartitions.values()) {
             for (HStoreFile sf : files) {
               insertFileIntoDPartition(level0Files, sf);
               ensureLevel0Metadata(sf);
             }
           }
-          candidateStripes.clear();
+          candidateDPartitions.clear();
         }
       }
     }
@@ -193,11 +192,11 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     // Copy the results into the fields.
     State state = new State();
     state.level0Files = ImmutableList.copyOf(level0Files);
-    state.dpFiles = new ArrayList<>(candidateStripes.size());
-    state.dpEndRows = new byte[Math.max(0, candidateStripes.size() - 1)][];
+    state.dpFiles = new ArrayList<>(candidateDPartitions.size());
+    state.dpEndRows = new byte[Math.max(0, candidateDPartitions.size() - 1)][];
     ArrayList<HStoreFile> newAllFiles = new ArrayList<>(level0Files);
-    int i = candidateStripes.size() - 1;
-    for (Map.Entry<byte[], ArrayList<HStoreFile>> entry : candidateStripes.entrySet()) {
+    int i = candidateDPartitions.size() - 1;
+    for (Map.Entry<byte[], ArrayList<HStoreFile>> entry : candidateDPartitions.entrySet()) {
       state.dpFiles.add(ImmutableList.copyOf(entry.getValue()));
       newAllFiles.addAll(entry.getValue());
       if (i > 0) {

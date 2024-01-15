@@ -86,6 +86,14 @@ public class DPCompactionPolicy extends CompactionPolicy {
     return selectSingleDPCompaction(di, isOffpeak);
   }
 
+  public static long getTotalFileSize(final Collection<HStoreFile> candidates) {
+    long totalSize = 0;
+    for (HStoreFile storeFile : candidates) {
+      totalSize += storeFile.getReader().length();
+    }
+    return totalSize;
+  }
+
   protected DPCompactionRequest selectSingleDPCompaction(DPInformationProvider di, boolean isOffpeak) {
     ArrayList<ImmutableList<HStoreFile>> dPartitions = di.getDPs();
     int bqIndex = -1;

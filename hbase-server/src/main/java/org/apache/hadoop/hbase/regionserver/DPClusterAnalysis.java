@@ -275,6 +275,10 @@ public class DPClusterAnalysis {
     dpCA.setDpBoundaries();
     deBug(dpCA.getDpBoundaries(), "CA Boundary");
 
+//    byte[] test = null;
+//    byte[] INVALID_KEY = null;
+//    System.out.println(test == INVALID_KEY); //true
+
 //    List<Integer> test = new ArrayList<>();
 //    test.add(1);
 //    test.add(2);

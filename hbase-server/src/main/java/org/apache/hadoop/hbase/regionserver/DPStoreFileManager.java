@@ -7,7 +7,6 @@ import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
-import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactionPolicy;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ConcatenatedLists;
 import org.apache.hadoop.util.StringUtils;
@@ -23,7 +22,7 @@ import java.util.*;
  * HStore). Collections that this class returns are immutable or unique to the call, so they should
  * be safe. DP store organizes the SSTables of the region into non-overlapping DPs. Each DP contains
  * a set of SSTables. When scan or get happens, it only has to read the SSTables from the
- * corresponding DPs. See DPCompationPolicy on how the DPs are determined; this class
+ * corresponding DPs. See DPCompactionPolicy on how the DPs are determined; this class
  * doesn't care. This class should work together with DPCompactionPolicy and DPCompactor.
  * With regard to how they work, we make at least the following (reasonable) assumptions: -
  * Compaction produces one SSTable per new DP (if any); that is easy to change. - Compaction has
@@ -48,19 +47,17 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
    * complicated error handling.
    */
   private static class State {
+    public byte[][] dPBoundaries = new byte[0][];
     /**
-     * The end rows of each DP. The last DP end is always open-ended, so it's not stored
-     * here. It is invariant that the start row of the DP is the end row of the previous one
-     * (and is an open boundary for the first one).
-     */
-    public byte[][] dpEndRows = new byte[0][];
-    /**
-     * Files by DP. Each element of the list corresponds to dpEndRow element with the same
-     * index, except the last one. Inside each list, the files are in reverse order by seqNum.
-     * Note that the length of this is one higher than that of dpEndKeys.
+     * Files by DP. Each element of the list corresponds to dPBoundaries elements
+     * with index: [2 * i, 2 * i + 1].
+     * Inside each list, the files are in reverse order by seqNum.
      */
     public ArrayList<ImmutableList<HStoreFile>> dpFiles = new ArrayList<>();
-    /** Level 0. The files are in reverse order by seqNum. */
+    /**
+     * Level 0.
+     * The files are in reverse order by seqNum.
+     */
     public ImmutableList<HStoreFile> level0Files = ImmutableList.of();
     /**
      * Cached list of all files in the structure, to return from some calls.
@@ -75,15 +72,13 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
   private HashMap<HStoreFile, byte[]> fileStarts = new HashMap<>();
   private HashMap<HStoreFile, byte[]> fileEnds = new HashMap<>();
   /**
-   * Normally invalid key is null, but in the map null is the result for "no key"; so use the
-   * following constant value in these maps instead. Note that this is a constant and we use it to
-   * compare by reference when we read from the map.
+   * Normally invalid key is null, but in the map null is the result for "no key";
+   * so use the following constant value in these maps instead.
+   * Note that this is a constant and we use it to compare by reference when we read from the map.
    */
   private static final byte[] INVALID_KEY_IN_MAP = new byte[0];
-
   private final CellComparator cellComparator;
   private DPStoreConfig config;
-
   private final int blockingFileCount;
 
   public DPStoreFileManager(CellComparator kvComparator, Configuration conf,
@@ -93,6 +88,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     this.blockingFileCount =
       conf.getInt(HStore.BLOCKING_STOREFILES_KEY, HStore.DEFAULT_BLOCKING_STOREFILE_COUNT);
   }
+
   @Override
   public void loadFiles(List<HStoreFile> storeFiles) {
     loadUnclassifiedStoreFiles(storeFiles);
@@ -130,79 +126,56 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       }
     }
 
-    boolean hasOverlaps = false;
-    byte[] expectedStartRow = null; // first dPartition can start wherever
+    byte[][] startRows = new byte[candidateDPartitions.size()][];
+    byte[] preEndRow = null;
+    int index = 0;
     Iterator<Map.Entry<byte[], ArrayList<HStoreFile>>> entryIter = candidateDPartitions.entrySet().iterator();
     while (entryIter.hasNext()) {
       Map.Entry<byte[], ArrayList<HStoreFile>> entry = entryIter.next();
       ArrayList<HStoreFile> files = entry.getValue();
       // Validate the file start rows, and remove the bad ones to level 0.
+      byte[] leftBoundary = null;
       for (int i = 0; i < files.size(); ++i) {
         HStoreFile sf = files.get(i);
         byte[] startRow = startOf(sf);
-        if (expectedStartRow == null) {
-          expectedStartRow = startRow; // ensure that first dPartition is still consistent
-        } else if (!rowEquals(expectedStartRow, startRow)) {
-          hasOverlaps = true;
-          LOG.warn("Store file doesn't fit into the tentative dPartitions - expected to start at ["
-            + Bytes.toString(expectedStartRow) + "], but starts at [" + Bytes.toString(startRow)
+        if (preEndRow != null && MAP_COMPARATOR.compare(startRow, preEndRow) < 0) {
+          LOG.warn("Store file doesn't fit into the tentative dPartitions - StartKey ["
+            + Bytes.toString(startRow) + "] expected to larger than [" + Bytes.toString(preEndRow)
             + "], to L0 it goes");
           HStoreFile badSf = files.remove(i);
           insertFileIntoDPartition(level0Files, badSf);
           ensureLevel0Metadata(badSf);
           --i;
+          continue;
+        }
+        if (leftBoundary == null) {
+          leftBoundary = startRow;
+          continue;
+        }
+        if (MAP_COMPARATOR.compare(startRow, leftBoundary) < 0){
+          leftBoundary = startRow;
         }
       }
-      // Check if any files from the candidate dPartition are valid. If so, add a dPartition.
-      byte[] endRow = entry.getKey();
-      if (!files.isEmpty()) {
-        expectedStartRow = endRow; // Next dPartition must start exactly at that key.
-      } else {
+      preEndRow = entry.getKey();
+      if (files.isEmpty()) {
         entryIter.remove();
+        return;
       }
-    }
-
-    // In the end, there must be open ends on two sides. If not, and there were no errors i.e.
-    // files are consistent, they might be coming from a split. We will treat the boundaries
-    // as open keys anyway, and log the message.
-    // If there were errors, we'll play it safe and dump everything into L0.
-    if (!candidateDPartitions.isEmpty()) {
-      HStoreFile firstFile = candidateDPartitions.firstEntry().getValue().get(0);
-      boolean isOpen = isOpen(startOf(firstFile)) && isOpen(candidateDPartitions.lastKey());
-      if (!isOpen) {
-        LOG.warn("The range of the loaded files does not cover full key space: from ["
-          + Bytes.toString(startOf(firstFile)) + "], to ["
-          + Bytes.toString(candidateDPartitions.lastKey()) + "]");
-        if (!hasOverlaps) {
-          ensureEdgeStripeMetadata(candidateDPartitions.firstEntry().getValue(), true);
-          ensureEdgeStripeMetadata(candidateDPartitions.lastEntry().getValue(), false);
-        } else {
-          LOG.warn("Inconsistent files, everything goes to L0.");
-          for (ArrayList<HStoreFile> files : candidateDPartitions.values()) {
-            for (HStoreFile sf : files) {
-              insertFileIntoDPartition(level0Files, sf);
-              ensureLevel0Metadata(sf);
-            }
-          }
-          candidateDPartitions.clear();
-        }
-      }
+      startRows[index] = leftBoundary;
+      ++index;
     }
 
     // Copy the results into the fields.
     State state = new State();
     state.level0Files = ImmutableList.copyOf(level0Files);
     state.dpFiles = new ArrayList<>(candidateDPartitions.size());
-    state.dpEndRows = new byte[Math.max(0, candidateDPartitions.size() - 1)][];
+    state.dPBoundaries = new byte[Math.max(0, candidateDPartitions.size()) * 2][];
     ArrayList<HStoreFile> newAllFiles = new ArrayList<>(level0Files);
-    int i = candidateDPartitions.size() - 1;
     for (Map.Entry<byte[], ArrayList<HStoreFile>> entry : candidateDPartitions.entrySet()) {
       state.dpFiles.add(ImmutableList.copyOf(entry.getValue()));
       newAllFiles.addAll(entry.getValue());
-      if (i > 0) {
-        state.dpEndRows[state.dpFiles.size() - 1] = entry.getKey();
-      }
-      --i;
+      state.dPBoundaries[2 * state.dpFiles.size() - 2] = startRows[state.dpFiles.size() - 1];
+      state.dPBoundaries[2 * state.dpFiles.size() - 1] = entry.getKey();
     }
     state.allFilesCached = ImmutableList.copyOf(newAllFiles);
     this.state = state;
@@ -212,29 +185,26 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
   private void debugDumpState(String string) {
     if (!LOG.isDebugEnabled()) return;
     StringBuilder sb = new StringBuilder();
-    sb.append("\n" + string + "; current stripe state is as such:");
+    sb.append("\n" + string + "; current dPartition state is as such:");
     sb.append("\n level 0 with ").append(state.level0Files.size())
       .append(" files: " + StringUtils.TraditionalBinaryPrefix
-        .long2String(StripeCompactionPolicy.getTotalFileSize(state.level0Files), "", 1) + ";");
+        .long2String(DPCompactionPolicy.getTotalFileSize(state.level0Files), "", 1) + ";");
     for (int i = 0; i < state.dpFiles.size(); ++i) {
-      String endRow = (i == state.dpEndRows.length)
+      String startRow = (i == 0)
+        ? "(start)"
+        : "[" + Bytes.toString(state.dPBoundaries[2 * i]) + "]";
+      String endRow = (2 * i == state.dPBoundaries.length)
         ? "(end)"
-        : "[" + Bytes.toString(state.dpEndRows[i]) + "]";
-      sb.append("\n stripe ending in ").append(endRow).append(" with ")
+        : "[" + Bytes.toString(state.dPBoundaries[2 * i + 1]) + "]";
+      sb.append("\n dPartition starting in ").append(startRow)
+        .append("\n dPartition ending in ").append(endRow).append(" with ")
         .append(state.dpFiles.get(i).size())
         .append(" files: " + StringUtils.TraditionalBinaryPrefix.long2String(
-          StripeCompactionPolicy.getTotalFileSize(state.dpFiles.get(i)), "", 1) + ";");
+          DPCompactionPolicy.getTotalFileSize(state.dpFiles.get(i)), "", 1) + ";");
     }
-    sb.append("\n").append(state.dpFiles.size()).append(" stripes total.");
+    sb.append("\n").append(state.dpFiles.size()).append(" dPartition total.");
     sb.append("\n").append(getStorefileCount()).append(" files total.");
-    LOG.debug(sb.toString());
-  }
-
-  private void ensureEdgeStripeMetadata(ArrayList<HStoreFile> stripe, boolean isFirst) {
-    HashMap<HStoreFile, byte[]> targetMap = isFirst ? fileStarts : fileEnds;
-    for (HStoreFile sf : stripe) {
-      targetMap.put(sf, OPEN_KEY);
-    }
+    LOG.info(sb.toString());
   }
 
   /**
@@ -246,10 +216,6 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
 
   private byte[] startOf(HStoreFile sf) {
     byte[] result = fileStarts.get(sf);
-
-    // result and INVALID_KEY_IN_MAP are compared _only_ by reference on purpose here as the latter
-    // serves only as a marker and is not to be confused with other empty byte arrays.
-    // See Javadoc of INVALID_KEY_IN_MAP for more information
     return (result == null) ? sf.getMetadataValue(DP_START_KEY)
       : result == INVALID_KEY_IN_MAP ? INVALID_KEY
       : result;
@@ -257,31 +223,23 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
 
   private byte[] endOf(HStoreFile sf) {
     byte[] result = fileEnds.get(sf);
-
-    // result and INVALID_KEY_IN_MAP are compared _only_ by reference on purpose here as the latter
-    // serves only as a marker and is not to be confused with other empty byte arrays.
-    // See Javadoc of INVALID_KEY_IN_MAP for more information
     return (result == null) ? sf.getMetadataValue(DP_END_KEY)
       : result == INVALID_KEY_IN_MAP ? INVALID_KEY
       : result;
   }
 
-  /**
-   * Checks whether the key is invalid (e.g. from an L0 file, or non-partition-compacted files).
-   */
-  private static final boolean isInvalid(byte[] key) {
-    // No need to use Arrays.equals because INVALID_KEY is null
+  private static boolean isInvalid(byte[] key) {
     return key == INVALID_KEY;
   }
 
   /**
-   * Inserts a file in the correct place (by seqnum) in a partition copy.
+   * Inserts a file in the correct place (by seq num) in a dPartition copy.
    * @param dPartition dPartition copy to insert into.
    * @param sf     File to insert.
    */
   private static void insertFileIntoDPartition(ArrayList<HStoreFile> dPartition, HStoreFile sf) {
-    // The only operation for which sorting of the files matters is KeyBefore. Therefore,
-    // we will store the file in reverse order by seqNum from the outset.
+    // The only operation for which sorting of the files matters is KeyBefore.
+    // Therefore, we will store the file in reverse order by seqNum from the outset.
     for (int insertBefore = 0;; ++insertBefore) {
       if (
         insertBefore == dPartition.size()
@@ -299,27 +257,27 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
   }
 
   /**
+   * Compare two keys. Keys must not be open (isOpen(row) == false).
+   */
+  private int nonOpenRowCompare(byte[] k1, byte[] k2) {
+    assert !isOpen(k1) && !isOpen(k2);
+    return Bytes.compareTo(k1, k2);
+  }
+
+  private int nonOpenRowCompare(Cell k1, byte[] k2) {
+    assert !isOpen(k1) && !isOpen(k2);
+    return cellComparator.compareRows(k1, k2, 0, k2.length);
+  }
+
+  /**
    * Checks whether the key indicates an open interval boundary (i.e. infinity).
    */
   private static boolean isOpen(byte[] key) {
     return key != null && key.length == 0;
   }
 
-  private static final boolean isOpen(Cell key) {
+  private static boolean isOpen(Cell key) {
     return key != null && key.getRowLength() == 0;
-  }
-
-  /**
-   * Compare two keys. Keys must not be open (isOpen(row) == false).
-   */
-  private final int nonOpenRowCompare(byte[] k1, byte[] k2) {
-    assert !isOpen(k1) && !isOpen(k2);
-    return Bytes.compareTo(k1, k2);
-  }
-
-  private final int nonOpenRowCompare(Cell k1, byte[] k2) {
-    assert !isOpen(k1) && !isOpen(k2);
-    return cellComparator.compareRows(k1, k2, 0, k2.length);
   }
 
   @Override
@@ -343,10 +301,9 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     debugDumpState("Merged compaction results");
   }
 
-  // Mark the files as compactedAway once the storefiles and compactedfiles list is finalised
-  // Let a background thread close the actual reader on these compacted files and also
-  // ensure to evict the blocks from block cache so that they are no longer in
-  // cache
+  // Mark the files as compactedAway once the storefiles and compactedfiles list is finalised.
+  // Let a background thread close the actual reader on these compacted files
+  // and also ensure to evict the blocks from block cache so that they are no longer in the cache.
   private void markCompactedAway(Collection<HStoreFile> compactedFiles) {
     for (HStoreFile file : compactedFiles) {
       file.markCompactedAway();
@@ -370,7 +327,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
    * it in place.
    */
   private class CompactionOrFlushMergeCopy {
-    private ArrayList<List<HStoreFile>> dPFiles = null;
+    private ArrayList<List<HStoreFile>> dPFiles;
     private ArrayList<HStoreFile> level0Files = null;
     private ArrayList<byte[]> dPEndRows = null;
 
@@ -395,9 +352,9 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       if (!isFlush) {
         removeCompactedFiles();
       }
-      TreeMap<byte[], HStoreFile> newStripes = processResults();
-      if (newStripes != null) {
-        processNewCandidateStripes(newStripes);
+      TreeMap<byte[], HStoreFile> newDPartitions = processResults();
+      if (newDPartitions != null) {
+        processNewCandidateDPartitions(newDPartitions);
       }
       // Create new state and update parent.
       DPStoreFileManager.State state = createNewState(false);
@@ -420,8 +377,8 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       DPStoreFileManager.State newState = new DPStoreFileManager.State();
       newState.level0Files =
         (this.level0Files == null) ? oldState.level0Files : ImmutableList.copyOf(this.level0Files);
-      newState.dpEndRows = (this.dPEndRows == null)
-        ? oldState.dpEndRows
+      newState.dPBoundaries = (this.dPEndRows == null)
+        ? oldState.dPBoundaries
         : this.dPEndRows.toArray(new byte[this.dPEndRows.size()][]);
       newState.dpFiles = new ArrayList<>(this.dPFiles.size());
       for (List<HStoreFile> newStripe : this.dPFiles) {
@@ -467,20 +424,19 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
      * @param index Index of the dPartition we need.
      * @return A lazy dPartition copy from current dPartitions.
      */
-    private final ArrayList<HStoreFile> getStripeCopy(int index) {
-      List<HStoreFile> stripeCopy = this.dPFiles.get(index);
-      ArrayList<HStoreFile> result = null;
-      if (stripeCopy instanceof ImmutableList<?>) {
-        result = new ArrayList<>(stripeCopy);
+    private ArrayList<HStoreFile> getDPartitionCopy(int index) {
+      List<HStoreFile> dPartitionCopy = this.dPFiles.get(index);
+      ArrayList<HStoreFile> result;
+      if (dPartitionCopy instanceof ImmutableList<?>) {
+        result = new ArrayList<>(dPartitionCopy);
         this.dPFiles.set(index, result);
       } else {
-        result = (ArrayList<HStoreFile>) stripeCopy;
+        result = (ArrayList<HStoreFile>) dPartitionCopy;
       }
       return result;
     }
 
-    /** Returns A lazy L0 copy from current state. */
-    private final ArrayList<HStoreFile> getLevel0Copy() {
+    private ArrayList<HStoreFile> getLevel0Copy() {
       if (this.level0Files == null) {
         this.level0Files = new ArrayList<>(DPStoreFileManager.this.state.level0Files);
       }
@@ -488,48 +444,43 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     }
 
     /**
-     * Process new files, and add them either to the structure of existing stripes, or to the list
-     * of new candidate stripes.
-     * @return New candidate stripes.
+     * Process new files, and add them either to the structure of existing dPartitions, or to the list
+     * of new candidate dPartitions.
+     * @return New candidate dPartitions.
      */
     private TreeMap<byte[], HStoreFile> processResults() {
-      TreeMap<byte[], HStoreFile> newStripes = null;
+      TreeMap<byte[], HStoreFile> newDPartitions = null;
       for (HStoreFile sf : this.results) {
         byte[] startRow = startOf(sf), endRow = endOf(sf);
         if (isInvalid(endRow) || isInvalid(startRow)) {
           if (!isFlush) {
-            LOG.warn("The newly compacted file doesn't have stripes set: " + sf.getPath());
+            LOG.warn("The newly compacted file doesn't have DPartitions set: " + sf.getPath());
           }
           insertFileIntoDPartition(getLevel0Copy(), sf);
           this.l0Results.add(sf);
           continue;
         }
         if (!this.dPFiles.isEmpty()) {
-          int stripeIndex = findStripeIndexByEndRow(endRow);
-          if ((stripeIndex >= 0) && rowEquals(getStartRow(stripeIndex), startRow)) {
-            // Simple/common case - add file to an existing stripe.
-            insertFileIntoDPartition(getStripeCopy(stripeIndex), sf);
+          int dPartitionIndex = findDPartitionIndexByEndRow(endRow);
+          if ((dPartitionIndex >= 0) && rowEquals(getStartRow(dPartitionIndex), startRow)) {
+            insertFileIntoDPartition(getDPartitionCopy(dPartitionIndex), sf);
             continue;
           }
         }
-
-        // Make a new candidate stripe.
-        if (newStripes == null) {
-          newStripes = new TreeMap<>(MAP_COMPARATOR);
+        // Make a new candidate dPartition.
+        if (newDPartitions == null) {
+          newDPartitions = new TreeMap<>(MAP_COMPARATOR);
         }
-        HStoreFile oldSf = newStripes.put(endRow, sf);
+        HStoreFile oldSf = newDPartitions.put(endRow, sf);
         if (oldSf != null) {
           throw new IllegalStateException(
-            "Compactor has produced multiple files for the stripe ending in ["
+            "Compactor has produced multiple files for the dPartition ending in ["
               + Bytes.toString(endRow) + "], found " + sf.getPath() + " and " + oldSf.getPath());
         }
       }
-      return newStripes;
+      return newDPartitions;
     }
 
-    /**
-     * Remove compacted files.
-     */
     private void removeCompactedFiles() {
       for (HStoreFile oldFile : this.compactedFiles) {
         byte[] oldEndRow = endOf(oldFile);
@@ -537,13 +488,13 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
         if (isInvalid(oldEndRow)) {
           source = getLevel0Copy();
         } else {
-          int stripeIndex = findStripeIndexByEndRow(oldEndRow);
-          if (stripeIndex < 0) {
+          int dPartitionIndex = findDPartitionIndexByEndRow(oldEndRow);
+          if (dPartitionIndex < 0) {
             throw new IllegalStateException(
               "An allegedly compacted file [" + oldFile + "] does not belong"
-                + " to a known stripe (end row - [" + Bytes.toString(oldEndRow) + "])");
+                + " to a known dPartition (end row - [" + Bytes.toString(oldEndRow) + "])");
           }
-          source = getStripeCopy(stripeIndex);
+          source = getDPartitionCopy(dPartitionIndex);
         }
         if (!source.remove(oldFile)) {
           LOG.warn("An allegedly compacted file [{}] was not found", oldFile);
@@ -552,18 +503,18 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     }
 
     /**
-     * See {@link #addCompactionResults(Collection, Collection)} - updates the stripe list with new
-     * candidate stripes/removes old stripes; produces new set of stripe end rows.
-     * @param newStripes New stripes - files by end row.
+     * See {@link #addCompactionResults(Collection, Collection)} - updates the dPartition list with new
+     * candidate dPartitions/removes old dPartitions; produces new set of dPartition end rows.
+     * @param newDPartitions New dPartitions - files by end row.
      */
-    private void processNewCandidateStripes(TreeMap<byte[], HStoreFile> newStripes) {
+    private void processNewCandidateDPartitions(TreeMap<byte[], HStoreFile> newDPartitions) {
       // Validate that the removed and added aggregate ranges still make for a full key space.
       boolean hasStripes = !this.dPFiles.isEmpty();
       this.dPEndRows =
-        new ArrayList<>(Arrays.asList(DPStoreFileManager.this.state.dpEndRows));
+        new ArrayList<>(Arrays.asList(DPStoreFileManager.this.state.dPBoundaries));
       int removeFrom = 0;
-      byte[] firstStartRow = startOf(newStripes.firstEntry().getValue());
-      byte[] lastEndRow = newStripes.lastKey();
+      byte[] firstStartRow = startOf(newDPartitions.firstEntry().getValue());
+      byte[] lastEndRow = newDPartitions.lastKey();
       if (!hasStripes && (!isOpen(firstStartRow) || !isOpen(lastEndRow))) {
         throw new IllegalStateException("Newly created stripes do not cover the entire key space.");
       }
@@ -576,13 +527,13 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
         if (isOpen(firstStartRow)) {
           removeFrom = 0;
         } else {
-          removeFrom = findStripeIndexByEndRow(firstStartRow);
+          removeFrom = findDPartitionIndexByEndRow(firstStartRow);
           if (removeFrom < 0) {
             throw new IllegalStateException("Compaction is trying to add a bad range.");
           }
           ++removeFrom;
         }
-        int removeTo = findStripeIndexByEndRow(lastEndRow);
+        int removeTo = findDPartitionIndexByEndRow(lastEndRow);
         if (removeTo < 0) {
           throw new IllegalStateException("Compaction is trying to add a bad range.");
         }
@@ -596,13 +547,13 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
           // Unfortunately, we cannot tell them apart without looking at timing or something
           // like that. We will assume we are dealing with a flush and dump it into L0.
           if (isFlush) {
-            long newSize = StripeCompactionPolicy.getTotalFileSize(newStripes.values());
+            long newSize = DPCompactionPolicy.getTotalFileSize(newDPartitions.values());
             LOG.warn("Stripes were created by a flush, but results of size " + newSize
               + " cannot be added because the stripes have changed");
             canAddNewStripes = false;
-            filesForL0 = newStripes.values();
+            filesForL0 = newDPartitions.values();
           } else {
-            long oldSize = StripeCompactionPolicy.getTotalFileSize(conflictingFiles);
+            long oldSize = DPCompactionPolicy.getTotalFileSize(conflictingFiles);
             LOG.info(conflictingFiles.size() + " conflicting files (likely created by a flush) "
               + " of size " + oldSize + " are moved to L0 due to concurrent stripe change");
             filesForL0 = conflictingFiles;
@@ -634,7 +585,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       // Now, insert new stripes. The total ranges match, so we can insert where we removed.
       byte[] previousEndRow = null;
       int insertAt = removeFrom;
-      for (Map.Entry<byte[], HStoreFile> newStripe : newStripes.entrySet()) {
+      for (Map.Entry<byte[], HStoreFile> newStripe : newDPartitions.entrySet()) {
         if (previousEndRow != null) {
           // Validate that the ranges are contiguous.
           assert !isOpen(previousEndRow);
@@ -658,12 +609,14 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
   }
 
   /**
-   * Finds the stripe index by end row.
+   * Finds the dPartition index by end row.
    */
-  private int findStripeIndexByEndRow(byte[] endRow) {
+  private int findDPartitionIndexByEndRow(byte[] endRow) {
     assert !isInvalid(endRow);
-    if (isOpen(endRow)) return state.dpEndRows.length;
-    return Arrays.binarySearch(state.dpEndRows, endRow, Bytes.BYTES_COMPARATOR);
+    if (isOpen(endRow)) {
+      return (state.dPBoundaries.length / 2) - 1;
+    }
+    return Arrays.binarySearch(state.dPBoundaries, endRow, Bytes.BYTES_COMPARATOR) / 2;
   }
 
   @Override
@@ -688,12 +641,12 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
 
   @Override
   public byte[] getStartRow(int dpIndex) {
-    return (dpIndex == 0 ? OPEN_KEY : this.state.dpEndRows[dpIndex - 1]);
+    return this.state.dPBoundaries[2 * dpIndex];
   }
 
   @Override
   public byte[] getEndRow(int dpIndex) {
-    return dpIndex == this.state.dpEndRows.length ? OPEN_KEY : this.state.dpEndRows[dpIndex];
+    return dpIndex == this.state.dPBoundaries.length ? OPEN_KEY : this.state.dPBoundaries[dpIndex];
   }
 
   @Override public List<HStoreFile> getLevel0Files() {
@@ -705,10 +658,8 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     if (this.state.dpFiles.isEmpty()) {
       return Collections.emptyList();
     }
-    ArrayList<byte[]> result = new ArrayList<>(this.state.dpEndRows.length + 2);
-    result.add(OPEN_KEY);
-    Collections.addAll(result, this.state.dpEndRows);
-    result.add(OPEN_KEY);
+    ArrayList<byte[]> result = new ArrayList<>(this.state.dPBoundaries.length);
+    Collections.addAll(result, this.state.dPBoundaries);
     return result;
   }
 
@@ -744,14 +695,14 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       return Collections.emptyList();
     }
 
-    int firstPartition = findDPartitionForRow(startRow, true);
-    int lastPartition = findDPartitionForRow(stopRow, false);
+    int firstPartition = findDPartitionForRow(startRow);
+    int lastPartition = findDPartitionForRow(stopRow);
     assert firstPartition <= lastPartition;
     if (firstPartition == lastPartition) {
-      return state.dpFiles.get(lastPartition); // There's just one stripe we need.
+      return state.dpFiles.get(lastPartition);
     }
     if (firstPartition == 0 && lastPartition == (state.dpFiles.size() - 1)) {
-      return state.allFilesCached; // We need to read all files.
+      return state.allFilesCached;
     }
 
     ConcatenatedLists<HStoreFile> result = new ConcatenatedLists<>();
@@ -762,17 +713,13 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
   /**
    * Finds the dPartition index for the dPartition containing a row provided externally for get/scan.
    */
-  private int findDPartitionForRow(byte[] row, boolean isStart) {
-    if (isStart && Arrays.equals(row, HConstants.EMPTY_START_ROW)) return 0;
-    if (!isStart && Arrays.equals(row, HConstants.EMPTY_END_ROW)) {
-      return state.dpFiles.size() - 1;
-    }
+  private int findDPartitionForRow(byte[] row) {
     // If there's an exact match below, a partition ends at "row". Partition right boundary is
     // exclusive, so that means the row is in the next partition; thus, we need to add one to index.
     // If there's no match, the return value of binarySearch is (-(insertion point) - 1), where
     // insertion point is the index of the next greater element, or list size if none. The
     // insertion point happens to be exactly what we need, so we need to add one to the result.
-    return Math.abs(Arrays.binarySearch(state.dpEndRows, row, Bytes.BYTES_COMPARATOR) + 1);
+    return Math.abs(Arrays.binarySearch(state.dPBoundaries, row, Bytes.BYTES_COMPARATOR) + 1);
   }
 
   @Override
@@ -781,9 +728,9 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     // Order matters for this call.
     result.addSublist(state.level0Files);
     if (!state.dpFiles.isEmpty()) {
-      int lastStripeIndex = findDPartitionForRow(CellUtil.cloneRow(targetKey), false);
-      for (int stripeIndex = lastStripeIndex; stripeIndex >= 0; --stripeIndex) {
-        result.addSublist(state.dpFiles.get(stripeIndex));
+      int lastDPartitionIndex = findDPartitionForRow(CellUtil.cloneRow(targetKey));
+      for (int dPartitionIndex = lastDPartitionIndex; dPartitionIndex >= 0; --dPartitionIndex) {
+        result.addSublist(state.dpFiles.get(dPartitionIndex));
       }
     }
     return result.iterator();
@@ -893,7 +840,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       ratio = 1 / ratio;
     }
     if (config.getMaxSplitImbalance() > ratio) {
-      return Optional.of(state.dpEndRows[leftIndex]);
+      return Optional.of(state.dPBoundaries[leftIndex]);
     }
 
     // If the difference between the sides is too large, we could get the proportional key on
@@ -908,7 +855,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       newRatio = 1 / newRatio;
     }
     if (newRatio >= ratio) {
-      return Optional.of(state.dpEndRows[leftIndex]);
+      return Optional.of(state.dPBoundaries[leftIndex]);
     }
     LOG.debug("Splitting the stripe - ratio w/o split " + ratio + ", ratio with split " + newRatio
       + " configured ratio " + config.getMaxSplitImbalance());
@@ -1010,7 +957,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       double normCount = (double) (dPFileCount + delta - config.getDPartitionCompactMinFiles())
         / (blockingFilePerStripe - config.getDPartitionCompactMinFiles());
       if (normCount >= 1.0) {
-        // This could happen if stripe is not split evenly. Do not return values that larger than
+        // This could happen if dPartition is not split evenly. Do not return values that larger than
         // 1.0 because we have not reached the blocking file count actually.
         return 1.0;
       }

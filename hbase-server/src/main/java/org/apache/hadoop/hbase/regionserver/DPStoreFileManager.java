@@ -646,7 +646,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
 
   @Override
   public byte[] getEndRow(int dpIndex) {
-    return dpIndex == this.state.dPBoundaries.length ? OPEN_KEY : this.state.dPBoundaries[dpIndex];
+    return this.state.dPBoundaries[2 * dpIndex + 1];
   }
 
   @Override public List<HStoreFile> getLevel0Files() {
@@ -714,12 +714,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
    * Finds the dPartition index for the dPartition containing a row provided externally for get/scan.
    */
   private int findDPartitionForRow(byte[] row) {
-    // If there's an exact match below, a partition ends at "row". Partition right boundary is
-    // exclusive, so that means the row is in the next partition; thus, we need to add one to index.
-    // If there's no match, the return value of binarySearch is (-(insertion point) - 1), where
-    // insertion point is the index of the next greater element, or list size if none. The
-    // insertion point happens to be exactly what we need, so we need to add one to the result.
-    return Math.abs(Arrays.binarySearch(state.dPBoundaries, row, Bytes.BYTES_COMPARATOR) + 1);
+    return Math.abs(Arrays.binarySearch(state.dPBoundaries, row, Bytes.BYTES_COMPARATOR) + 1) / 2;
   }
 
   @Override

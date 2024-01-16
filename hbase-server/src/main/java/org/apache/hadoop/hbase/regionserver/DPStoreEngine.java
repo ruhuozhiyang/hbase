@@ -40,7 +40,7 @@ public class DPStoreEngine extends
     this.compactionPolicy = new DPCompactionPolicy(conf, store, this.config);
     this.compactor = new DPCompactor(conf, store);
     this.storeFileManager = new DPStoreFileManager(cellComparator, conf, this.config);
-    this.storeFlusher = new DPStoreFlusher(conf, store, this.compactionPolicy, this.storeFileManager);
+    this.storeFlusher = new DPStoreFlusher(conf, store, this.storeFileManager);
   }
 
   private class DPCompaction extends CompactionContext {

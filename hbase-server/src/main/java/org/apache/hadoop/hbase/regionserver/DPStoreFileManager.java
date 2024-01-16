@@ -28,7 +28,7 @@ import java.util.*;
  * Compaction produces one SSTable per new DP (if any); that is easy to change. - Compaction has
  * one contiguous set of DPs both in and out.
  */
-public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.DPInformationProvider {
+public class DPStoreFileManager implements StoreFileManager, DPInformationProvider {
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreFileManager.class);
   /**
    * The file metadata fields that contain the DP information.
@@ -329,11 +329,9 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
   private class CompactionOrFlushMergeCopy {
     private ArrayList<List<HStoreFile>> dPFiles;
     private ArrayList<HStoreFile> level0Files = null;
-    private ArrayList<byte[]> dPEndRows = null;
-
+    private ArrayList<byte[]> dPBoundaries = null;
     private Collection<HStoreFile> compactedFiles = null;
     private Collection<HStoreFile> results = null;
-
     private List<HStoreFile> l0Results = new ArrayList<>();
     private final boolean isFlush;
 
@@ -354,7 +352,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       }
       TreeMap<byte[], HStoreFile> newDPartitions = processResults();
       if (newDPartitions != null) {
-        processNewCandidateDPartitions(newDPartitions);
+        processNewDPartitions(newDPartitions);
       }
       // Create new state and update parent.
       DPStoreFileManager.State state = createNewState(false);
@@ -373,18 +371,18 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     private DPStoreFileManager.State createNewState(boolean delCompactedFiles) {
       DPStoreFileManager.State oldState = DPStoreFileManager.this.state;
       // dPartition count should be the same unless the end rows changed.
-      assert oldState.dpFiles.size() == this.dPFiles.size() || this.dPEndRows != null;
+      assert oldState.dpFiles.size() == this.dPFiles.size() || this.dPBoundaries != null;
       DPStoreFileManager.State newState = new DPStoreFileManager.State();
       newState.level0Files =
         (this.level0Files == null) ? oldState.level0Files : ImmutableList.copyOf(this.level0Files);
-      newState.dPBoundaries = (this.dPEndRows == null)
+      newState.dPBoundaries = (this.dPBoundaries == null)
         ? oldState.dPBoundaries
-        : this.dPEndRows.toArray(new byte[this.dPEndRows.size()][]);
+        : this.dPBoundaries.toArray(new byte[this.dPBoundaries.size()][]);
       newState.dpFiles = new ArrayList<>(this.dPFiles.size());
-      for (List<HStoreFile> newStripe : this.dPFiles) {
-        newState.dpFiles.add(newStripe instanceof ImmutableList<?>
-          ? (ImmutableList<HStoreFile>) newStripe
-          : ImmutableList.copyOf(newStripe));
+      for (List<HStoreFile> newDPartition : this.dPFiles) {
+        newState.dpFiles.add(newDPartition instanceof ImmutableList<?>
+          ? (ImmutableList<HStoreFile>) newDPartition
+          : ImmutableList.copyOf(newDPartition));
       }
 
       List<HStoreFile> newAllFiles = new ArrayList<>(oldState.allFilesCached);
@@ -444,8 +442,9 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     }
 
     /**
-     * Process new files, and add them either to the structure of existing dPartitions, or to the list
-     * of new candidate dPartitions.
+     * Process new files.
+     * add them either to the structure of existing dPartitions,
+     * or to the list of new candidate dPartitions.
      * @return New candidate dPartitions.
      */
     private TreeMap<byte[], HStoreFile> processResults() {
@@ -502,60 +501,52 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
       }
     }
 
-    /**
-     * See {@link #addCompactionResults(Collection, Collection)} - updates the dPartition list with new
-     * candidate dPartitions/removes old dPartitions; produces new set of dPartition end rows.
-     * @param newDPartitions New dPartitions - files by end row.
-     */
-    private void processNewCandidateDPartitions(TreeMap<byte[], HStoreFile> newDPartitions) {
+    private void processNewDPartitions(TreeMap<byte[], HStoreFile> newDPartitions) {
       // Validate that the removed and added aggregate ranges still make for a full key space.
-      boolean hasStripes = !this.dPFiles.isEmpty();
-      this.dPEndRows =
+      boolean hasDPartitions = !this.dPFiles.isEmpty();
+      this.dPBoundaries =
         new ArrayList<>(Arrays.asList(DPStoreFileManager.this.state.dPBoundaries));
       int removeFrom = 0;
-      byte[] firstStartRow = startOf(newDPartitions.firstEntry().getValue());
-      byte[] lastEndRow = newDPartitions.lastKey();
-      if (!hasStripes && (!isOpen(firstStartRow) || !isOpen(lastEndRow))) {
-        throw new IllegalStateException("Newly created stripes do not cover the entire key space.");
-      }
+      byte[] newFirstStartRow = startOf(newDPartitions.firstEntry().getValue());
+      byte[] newLastEndRow = newDPartitions.lastKey();
 
-      boolean canAddNewStripes = true;
+      boolean canAddNewDPartitions = true;
       Collection<HStoreFile> filesForL0 = null;
-      if (hasStripes) {
-        // Determine which stripes will need to be removed because they conflict with new stripes.
-        // The new boundaries should match old stripe boundaries, so we should get exact matches.
-        if (isOpen(firstStartRow)) {
+      if (hasDPartitions) {
+        // Determine which dPartitions will need to be removed because they conflict with new dPartitions.
+        // The new boundaries should match old dPartitions boundaries, so we should get exact matches.
+        if (isOpen(newFirstStartRow)) {
           removeFrom = 0;
         } else {
-          removeFrom = findDPartitionIndexByEndRow(firstStartRow);
+          removeFrom = findDPartitionIndexByEndRow(newFirstStartRow);
           if (removeFrom < 0) {
             throw new IllegalStateException("Compaction is trying to add a bad range.");
           }
           ++removeFrom;
         }
-        int removeTo = findDPartitionIndexByEndRow(lastEndRow);
+        int removeTo = findDPartitionIndexByEndRow(newLastEndRow);
         if (removeTo < 0) {
           throw new IllegalStateException("Compaction is trying to add a bad range.");
         }
-        // See if there are files in the stripes we are trying to replace.
+        // See if there are files in the dPartitions we are trying to replace.
         ArrayList<HStoreFile> conflictingFiles = new ArrayList<>();
         for (int removeIndex = removeTo; removeIndex >= removeFrom; --removeIndex) {
           conflictingFiles.addAll(this.dPFiles.get(removeIndex));
         }
         if (!conflictingFiles.isEmpty()) {
-          // This can be caused by two things - concurrent flush into stripes, or a bug.
+          // This can be caused by two things - concurrent flush into dPartitions, or a bug.
           // Unfortunately, we cannot tell them apart without looking at timing or something
           // like that. We will assume we are dealing with a flush and dump it into L0.
           if (isFlush) {
             long newSize = DPCompactionPolicy.getTotalFileSize(newDPartitions.values());
-            LOG.warn("Stripes were created by a flush, but results of size " + newSize
-              + " cannot be added because the stripes have changed");
-            canAddNewStripes = false;
+            LOG.warn("DPartitions were created by a flush, but results of size " + newSize
+              + " cannot be added because the DPartitions have changed");
+            canAddNewDPartitions = false;
             filesForL0 = newDPartitions.values();
           } else {
             long oldSize = DPCompactionPolicy.getTotalFileSize(conflictingFiles);
             LOG.info(conflictingFiles.size() + " conflicting files (likely created by a flush) "
-              + " of size " + oldSize + " are moved to L0 due to concurrent stripe change");
+              + " of size " + oldSize + " are moved to L0 due to concurrent DPartitions change");
             filesForL0 = conflictingFiles;
           }
           if (filesForL0 != null) {
@@ -566,42 +557,42 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
           }
         }
 
-        if (canAddNewStripes) {
+        if (canAddNewDPartitions) {
           // Remove old empty stripes.
           int originalCount = this.dPFiles.size();
           for (int removeIndex = removeTo; removeIndex >= removeFrom; --removeIndex) {
             if (removeIndex != originalCount - 1) {
-              this.dPEndRows.remove(removeIndex);
+              this.dPBoundaries.remove(removeIndex);
             }
             this.dPFiles.remove(removeIndex);
           }
         }
       }
 
-      if (!canAddNewStripes) {
+      if (!canAddNewDPartitions) {
         return; // Files were already put into L0.
       }
 
-      // Now, insert new stripes. The total ranges match, so we can insert where we removed.
+      // Now, insert new DPartitions. The total ranges match, so we can insert where we removed.
       byte[] previousEndRow = null;
       int insertAt = removeFrom;
-      for (Map.Entry<byte[], HStoreFile> newStripe : newDPartitions.entrySet()) {
+      for (Map.Entry<byte[], HStoreFile> newDPartition : newDPartitions.entrySet()) {
         if (previousEndRow != null) {
           // Validate that the ranges are contiguous.
           assert !isOpen(previousEndRow);
-          byte[] startRow = startOf(newStripe.getValue());
+          byte[] startRow = startOf(newDPartition.getValue());
           if (!rowEquals(previousEndRow, startRow)) {
-            throw new IllegalStateException("The new stripes produced by "
+            throw new IllegalStateException("The new dPartitions produced by "
               + (isFlush ? "flush" : "compaction") + " are not contiguous");
           }
         }
-        // Add the new stripe.
+        // Add the new DPartitions.
         ArrayList<HStoreFile> tmp = new ArrayList<>();
-        tmp.add(newStripe.getValue());
+        tmp.add(newDPartition.getValue());
         dPFiles.add(insertAt, tmp);
-        previousEndRow = newStripe.getKey();
+        previousEndRow = newDPartition.getKey();
         if (!isOpen(previousEndRow)) {
-          dPEndRows.add(insertAt, previousEndRow);
+          dPBoundaries.add(insertAt, previousEndRow);
         }
         ++insertAt;
       }
@@ -616,7 +607,7 @@ public class DPStoreFileManager implements StoreFileManager, DPCompactionPolicy.
     if (isOpen(endRow)) {
       return (state.dPBoundaries.length / 2) - 1;
     }
-    return Arrays.binarySearch(state.dPBoundaries, endRow, Bytes.BYTES_COMPARATOR) / 2;
+    return (Arrays.binarySearch(state.dPBoundaries, endRow, Bytes.BYTES_COMPARATOR) / 2);
   }
 
   @Override

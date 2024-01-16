@@ -6,7 +6,6 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
-import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -20,18 +19,16 @@ import java.util.function.Consumer;
 public class DPStoreFlusher extends StoreFlusher{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreFlusher.class);
   private final Object flushLock = new Object();
-  private final DPCompactionPolicy policy;
-  private final DPCompactionPolicy.DPInformationProvider dPartitions;
-  public DPStoreFlusher(Configuration conf, HStore store, DPCompactionPolicy policy,
-    DPStoreFileManager dPartitions) {
+  private final DPInformationProvider dPInformation;
+
+  public DPStoreFlusher(Configuration conf, HStore store, DPStoreFileManager dPInformation) {
     super(conf, store);
-    this.policy = policy;
-    this.dPartitions = dPartitions;
+    this.dPInformation = dPInformation;
   }
 
-  private DPMultiFileWriter.WriterFactory createWriterFactory(MemStoreSnapshot snapshot,
+  private DPBoundaryMultiFileWriter.WriterFactory createWriterFactory(MemStoreSnapshot snapshot,
     Consumer<Path> writerCreationTracker) {
-    return new DPMultiFileWriter.WriterFactory() {
+    return new DPBoundaryMultiFileWriter.WriterFactory() {
       @Override
       public StoreFileWriter createWriter() throws IOException {
         return DPStoreFlusher.this.createWriter(snapshot, true, writerCreationTracker);
@@ -45,22 +42,19 @@ public class DPStoreFlusher extends StoreFlusher{
     List<Path> result = new ArrayList<>();
     int cellsCount = snapshot.getCellsCount();
     if (cellsCount == 0) {
-      // don't flush if there are no entries
       return result;
     }
 
     InternalScanner scanner = createScanner(snapshot.getScanners(), tracker);
     InternalScanner scannerForCA = createScanner(snapshot.getScanners(), tracker);
 
-    // Let policy select flush method.
-    DPStoreFlusher.DPFlushRequest req =
-      this.policy.selectFlush(scannerForCA, store.getComparator(), this.dPartitions);
+    DPFlushRequest req = selectFlush(scannerForCA, store.getComparator(), this.dPInformation);
 
     boolean success = false;
-    DPMultiFileWriter mw = null;
+    DPBoundaryMultiFileWriter mw = null;
     try {
       mw = req.createWriter(); // Writer according to the policy.
-      DPMultiFileWriter.WriterFactory factory =
+      DPBoundaryMultiFileWriter.WriterFactory factory =
         createWriterFactory(snapshot, writerCreationTracker);
       StoreScanner storeScanner = (scanner instanceof StoreScanner) ? (StoreScanner) scanner : null;
       mw.init(storeScanner, factory);
@@ -89,24 +83,38 @@ public class DPStoreFlusher extends StoreFlusher{
     return result;
   }
 
-  public static class DPFlushRequest {
-    protected final CellComparator comparator;
-    protected InternalScanner scanner;
+  public DPFlushRequest selectFlush(InternalScanner scanner, CellComparator cellComparator,
+    DPInformationProvider dip) {
+    if (dip.getDPCount() == 0) {
+      return new GenBoundaryAndDPFlushRequest(cellComparator, scanner);
+    }
+    return new BoundaryDPFlushRequest(cellComparator, dip.getDPBoundaries());
+  }
 
-    public DPFlushRequest(CellComparator comparator) {
-      this.comparator = comparator;
+  public static abstract class DPFlushRequest {
+    protected final CellComparator cellComparator;
+
+    public DPFlushRequest(CellComparator cellComparator) {
+      this.cellComparator = cellComparator;
     }
 
-    public DPFlushRequest(CellComparator comparator, InternalScanner scanner) {
-      this.comparator = comparator;
+    public abstract DPBoundaryMultiFileWriter createWriter() throws IOException;
+  }
+
+  public static class GenBoundaryAndDPFlushRequest extends DPFlushRequest {
+    private InternalScanner scanner;
+
+    public GenBoundaryAndDPFlushRequest(CellComparator cellComparator, InternalScanner scanner) {
+      super(cellComparator);
       this.scanner = scanner;
     }
 
-    public DPMultiFileWriter createWriter() throws IOException {
+    @Override
+    public DPBoundaryMultiFileWriter createWriter() throws IOException {
       List<byte[]> dpBoundaries = doCA2GetDPBoundaries();
       LOG.info("Get dpBoundaries:{} by DP Cluster Analysis.", dpBoundaries.toString());
-      return new DPMultiFileWriter.BoundaryMultiWriter(comparator, dpBoundaries, null,
-        null);
+      return new DPBoundaryMultiFileWriter(cellComparator, dpBoundaries,
+        null, null);
     }
 
     private List<byte[]> doCA2GetDPBoundaries() throws IOException {
@@ -114,19 +122,23 @@ public class DPStoreFlusher extends StoreFlusher{
       List<byte[]> rowKeys = new ArrayList<>();
 
       boolean hasMore;
+      int flagForDebug = 0;
       do {
         hasMore = scanner.next(kvs);
         if (!kvs.isEmpty()) {
           for (Cell cell : kvs) {
             KeyValue kv = (KeyValue) cell;
             final byte[] rowArray = kv.getKey();
-            LOG.info("Key String:{}", kv.getKeyString());
+            if (flagForDebug < 3) {
+              LOG.info("Key String:{}", kv.getKeyString());
+            }
             byte[] rowArrayCopy = new byte[rowArray.length];
             System.arraycopy(rowArray, 0, rowArrayCopy, 0, rowArray.length);
             rowKeys.add(rowArrayCopy);
           }
           kvs.clear();
         }
+        ++flagForDebug;
       } while (hasMore);
 
       DPClusterAnalysis dpCA = new DPClusterAnalysis();
@@ -137,20 +149,25 @@ public class DPStoreFlusher extends StoreFlusher{
     }
   }
 
-  /** Dynamic partition flush request wrapper based on boundaries. */
-  public static class BoundaryDPFlushRequest extends DPStoreFlusher.DPFlushRequest {
+  /**
+   * Dynamic partition flush request wrapper based on boundaries.
+   */
+  public static class BoundaryDPFlushRequest extends DPFlushRequest {
     private final List<byte[]> targetBoundaries;
 
-    /** @param targetBoundaries New files should be written with these boundaries. */
-    public BoundaryDPFlushRequest(CellComparator comparator, List<byte[]> targetBoundaries) {
-      super(comparator);
+    /**
+     * @param cellComparator used to compare cells.
+     * @param targetBoundaries New files should be written with these boundaries.
+     */
+    public BoundaryDPFlushRequest(CellComparator cellComparator, List<byte[]> targetBoundaries) {
+      super(cellComparator);
       this.targetBoundaries = targetBoundaries;
     }
 
     @Override
-    public DPMultiFileWriter createWriter() throws IOException {
-      return new DPMultiFileWriter.BoundaryMultiWriter(comparator, targetBoundaries, null,
-        null);
+    public DPBoundaryMultiFileWriter createWriter() throws IOException {
+      return new DPBoundaryMultiFileWriter(cellComparator, targetBoundaries,
+        null, null);
     }
   }
 }

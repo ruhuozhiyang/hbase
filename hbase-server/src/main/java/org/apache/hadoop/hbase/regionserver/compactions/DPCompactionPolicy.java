@@ -2,11 +2,9 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.regionserver.DPInformationProvider;
 import org.apache.hadoop.hbase.regionserver.DPStoreConfig;
-import org.apache.hadoop.hbase.regionserver.DPStoreFlusher;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
-import org.apache.hadoop.hbase.regionserver.InternalScanner;
 import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
 import org.apache.hadoop.hbase.regionserver.StoreUtils;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
@@ -149,14 +147,6 @@ public class DPCompactionPolicy extends CompactionPolicy {
     return compactionSize > comConf.getThrottlePoint();
   }
 
-  public DPStoreFlusher.DPFlushRequest selectFlush(InternalScanner scanner,
-    CellComparator comparator, DPCompactionPolicy.DPInformationProvider di) {
-    if (di.getDPCount() == 0) {
-      return new DPStoreFlusher.DPFlushRequest(comparator, scanner);
-    }
-    return new DPStoreFlusher.BoundaryDPFlushRequest(comparator, di.getDPBoundaries());
-  }
-
   /** Dynamic partition compaction request wrapper. */
   public static class DPCompactionRequest {
     private CompactionRequestImpl request;
@@ -185,8 +175,8 @@ public class DPCompactionPolicy extends CompactionPolicy {
      * @param compactor Compactor.
      * @return result of compact(...)
      */
-    public List<Path> execute(DPCompactor compactor,
-      ThroughputController throughputController, User user) throws IOException {
+    public List<Path> execute(DPCompactor compactor, ThroughputController throughputController,
+      User user) throws IOException {
       return compactor.compact(this.request, this.targetBoundaries, this.majorRangeFromRow,
         this.majorRangeToRow, throughputController, user);
     }
@@ -211,36 +201,5 @@ public class DPCompactionPolicy extends CompactionPolicy {
       this.majorRangeFromRow = startRow;
       this.majorRangeToRow = endRow;
     }
-  }
-
-  /** The information about partitions that the policy needs to do its stuff */
-  public static interface DPInformationProvider {
-    Collection<HStoreFile> getStorefiles();
-
-    /**
-     * Gets the start row for a given dynamic partition.
-     * @param dpIndex dp index.
-     * @return Start row. May be an open key.
-     */
-    byte[] getStartRow(int dpIndex);
-
-    /**
-     * Gets the end row for a given dynamic partition.
-     * @param dpIndex dp index.
-     * @return End row. May be an open key.
-     */
-    byte[] getEndRow(int dpIndex);
-
-    /** Returns Level 0 files. */
-    List<HStoreFile> getLevel0Files();
-
-    /** Returns All dp boundaries; including the open ones on both ends. */
-    List<byte[]> getDPBoundaries();
-
-    /** Returns The dynamic partitions. */
-    ArrayList<ImmutableList<HStoreFile>> getDPs();
-
-    /** Returns dynamic partition count. */
-    int getDPCount();
   }
 }

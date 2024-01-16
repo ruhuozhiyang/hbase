@@ -2,6 +2,7 @@ package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,10 +56,7 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
 
   @Override
   public void append(Cell cell) throws IOException {
-    if (this.currentWriter == null && this.existingWriters.size() == 1) {
-      sanityCheckLeft(this.boundaries.get(0), cell);
-    }
-    if (false) {
+    if (!checkWhetherInDPartition(this.boundaries, cell)) {
       this.writerForL0.append(cell);
       return;
     }
@@ -66,6 +64,15 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
     this.currentWriter.append(cell);
     this.lastCell = cell;
     ++this.cellsInCurrentWriter;
+  }
+
+  private boolean checkWhetherInDPartition(List<byte[]> boundaries, Cell cell) {
+    int i = Collections.binarySearch(boundaries, ((KeyValue) cell).getKey(), Bytes.BYTES_COMPARATOR);
+    if (i >= 0) {
+      return i % 2 == 0 ? true : false;
+    } else {
+      return (Math.abs(i) % 2) == 0 ? false : true;
+    }
   }
 
   private void prepareWriterFor(Cell cell) throws IOException {

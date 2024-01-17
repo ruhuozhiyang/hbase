@@ -1,19 +1,27 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.yetus.audience.InterfaceAudience;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.stream.Collectors;
 
+@InterfaceAudience.Private
 public class DPClusterAnalysis {
   private List<byte[]> inData = new ArrayList<>();
   private List<byte[]> initKernel = new DPArrayList<>();
-  private List<byte[]> dpBoundaries = new DPArrayList<>();
+  private List<byte[]> oldDPBoundaries = null;
+  private List<byte[]> newDPBoundaries = new DPArrayList<>();
 
   public void loadData(List<byte[]> data) {
     this.inData = data;
+  }
+
+  public void setOldDPBoundaries(List<byte[]> oldDPBoundaries) {
+    this.oldDPBoundaries = oldDPBoundaries;
   }
 
   private class DPArrayList<E> extends ArrayList<E> {
@@ -94,20 +102,68 @@ public class DPClusterAnalysis {
   public void setDpBoundaries() {
     int kernelsDis = Math.abs(Bytes.compareTo(this.initKernel.get(0), this.initKernel.get(1))) / 2;
     byte[] o = this.initKernel.get(0);
+
     byte[] l = new byte[o.length];
     System.arraycopy(o, 0, l, 0, o.length);
     int nl = (l[0] & 0xFF) - kernelsDis;
     l[0] = (byte) (nl < 48 ? 48 : nl);
-    this.dpBoundaries.add(l);
 
     byte[] r = new byte[o.length];
     System.arraycopy(o, 0, r, 0, o.length);
-    r[0] = (byte) ((r[0] & 0xFF) + kernelsDis);
-    this.dpBoundaries.add(r);
+    int nr = (r[0] & 0xFF) + kernelsDis;
+    r[0] = (byte) (nr > 57 ? 57 : nr);
+
+    if (oldDPBoundaries != null) {
+      final int startIndex = Collections.binarySearch(oldDPBoundaries, l, Bytes.BYTES_COMPARATOR);
+      final int endIndex = Collections.binarySearch(oldDPBoundaries, r, Bytes.BYTES_COMPARATOR);
+      this.newDPBoundaries = new ArrayList<>(this.oldDPBoundaries);
+      if (startIndex >= 0 && endIndex > 0) {
+        return;
+      }
+      int endInsertPoint = Math.abs(endIndex + 1);
+      if (endInsertPoint > 0 && endInsertPoint % 2 == 0) {
+        if (Bytes.compareTo(l, this.oldDPBoundaries.get(endInsertPoint - 1)) > 0) {
+          this.newDPBoundaries.add(endInsertPoint, l);
+        } else {
+          byte[] ll = new byte[l.length];
+          System.arraycopy(l, 0, ll, 0, l.length);
+          ll[ll.length - 1] = (byte) ((ll[ll.length - 1] & 0xFF) + 1);
+          this.newDPBoundaries.add(endInsertPoint, ll);
+        }
+        this.newDPBoundaries.add(endInsertPoint + 1, r);
+      }
+    } else {
+      this.newDPBoundaries.add(l);
+      this.newDPBoundaries.add(r);
+    }
   }
 
   public List<byte[]> getDpBoundaries() {
-    return this.dpBoundaries;
+    return this.newDPBoundaries;
+  }
+
+  public static void boundariesExpansion(List<byte[]> targetBoundaries) {
+    for (int i = 0; i < targetBoundaries.size(); i++) {
+      if (i % 2 == 0) {
+        final byte[] start = targetBoundaries.get(i);
+        final byte[] end = targetBoundaries.get(i + 1);
+        byte[] newStart;
+        int ns = (start[0] & 0xFF) - 1;
+        if (ns < 48) {
+          newStart = DPStoreFileManager.OPEN_KEY;
+          targetBoundaries.set(i, newStart);
+          continue;
+        } else {
+          newStart = new byte[start.length];
+          System.arraycopy(start, 0, newStart, 0, start.length);
+          newStart[0] = (byte) ns;
+        }
+        if ((end[0] & 0xFF) - (newStart[0] & 0xFF) > 2) {
+          continue;
+        }
+        targetBoundaries.set(i, newStart);
+      }
+    }
   }
 
   private static void deBug(List<byte[]> kernelOrBoundary, String message) {

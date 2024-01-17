@@ -2,13 +2,16 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.regionserver.DPClusterAnalysis;
 import org.apache.hadoop.hbase.regionserver.DPInformationProvider;
 import org.apache.hadoop.hbase.regionserver.DPStoreConfig;
+import org.apache.hadoop.hbase.regionserver.DPStoreFileManager;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
 import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
 import org.apache.hadoop.hbase.regionserver.StoreUtils;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.User;
+import org.apache.hadoop.hbase.util.ConcatenatedLists;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -40,10 +43,7 @@ public class DPCompactionPolicy extends CompactionPolicy {
 
   public DPCompactionRequest createEmptyRequest(DPInformationProvider di,
     CompactionRequestImpl request) {
-    if (di.getDPCount() > 0) {
-      return new DPCompactionRequest(request, di.getDPBoundaries());
-    }
-    return null;
+    return new DPCompactionRequest(request, di.getDPBoundaries());
   }
 
   public boolean needsCompactions(DPInformationProvider di, List<HStoreFile> filesCompacting) {
@@ -81,18 +81,21 @@ public class DPCompactionPolicy extends CompactionPolicy {
       return request;
     }
 
-    return selectSingleDPCompaction(di, isOffpeak);
-  }
-
-  public static long getTotalFileSize(final Collection<HStoreFile> candidates) {
-    long totalSize = 0;
-    for (HStoreFile storeFile : candidates) {
-      totalSize += storeFile.getReader().length();
+    List<HStoreFile> l0Files = di.getLevel0Files();
+    boolean shouldCompactL0 = this.dpStoreConfig.getLevel0MinFiles() <= l0Files.size();
+    if (shouldCompactL0) {
+      LOG.debug("Selecting L0 compaction with " + l0Files.size() + " files");
+      DPCompactionRequest result = selectSingleDPCompaction(di, true, isOffpeak);
+      if (result != null) {
+        return result;
+      }
     }
-    return totalSize;
+
+    return selectSingleDPCompaction(di, false, isOffpeak);
   }
 
-  protected DPCompactionRequest selectSingleDPCompaction(DPInformationProvider di, boolean isOffpeak) {
+  protected DPCompactionRequest selectSingleDPCompaction(DPInformationProvider di, boolean includeL0,
+    boolean isOffpeak) {
     ArrayList<ImmutableList<HStoreFile>> dPartitions = di.getDPs();
     int bqIndex = -1;
     List<HStoreFile> bqSelection = null;
@@ -118,9 +121,17 @@ public class DPCompactionPolicy extends CompactionPolicy {
       LOG.debug("No good compaction is possible in any DPartition.");
       return null;
     }
-    List<HStoreFile> filesToCompact = new ArrayList<>(bqSelection);
-    DPCompactionRequest req = new DPCompactionRequest(filesToCompact, di.getDPBoundaries());
-    if (filesToCompact.size() == dPartitions.get(bqIndex).size()) {
+
+    List<HStoreFile> dPfilesToCompact = new ArrayList<>(bqSelection);
+    List<HStoreFile> l0Files = di.getLevel0Files();
+    ConcatenatedLists<HStoreFile> sfs = new ConcatenatedLists<>();
+    sfs.addSublist(dPfilesToCompact);
+    if (includeL0) {
+      sfs.addSublist(l0Files);
+    }
+    DPCompactionRequest req = new DPCompactionRequest(sfs, di.getDPBoundaries());
+
+    if (dPfilesToCompact.size() == dPartitions.get(bqIndex).size() && includeL0) {
       req.setMajorRange(di.getStartRow(bqIndex), di.getEndRow(bqIndex));
     }
     req.getRequest().setOffPeak(isOffpeak);

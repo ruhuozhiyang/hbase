@@ -1,11 +1,13 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.yetus.audience.InterfaceAudience;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
 /** The information about partitions that the policy needs to do its stuff */
+@InterfaceAudience.Private
 public interface DPInformationProvider {
   Collection<HStoreFile> getStorefiles();
 

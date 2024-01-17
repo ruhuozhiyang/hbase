@@ -166,6 +166,8 @@ public class DPStoreFlusher extends StoreFlusher{
 
     @Override
     public DPBoundaryMultiFileWriter createWriter() throws IOException {
+      DPClusterAnalysis.boundariesExpansion(targetBoundaries);
+      LOG.info("Expansion dpBoundaries:{}.", targetBoundaries);
       return new DPBoundaryMultiFileWriter(cellComparator, targetBoundaries,
         null, null);
     }

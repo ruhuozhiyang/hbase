@@ -2,7 +2,10 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.regionserver.DPBoundaryMultiFileWriter;
+import org.apache.hadoop.hbase.regionserver.DPClusterAnalysis;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
 import org.apache.hadoop.hbase.regionserver.ScanInfo;
@@ -15,6 +18,7 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -26,9 +30,67 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
     super(conf, store);
   }
 
+  public List<Path> compact(CompactionRequestImpl request, final List<byte[]> targetBoundaries,
+    final byte[] majorRangeFromRow, final byte[] majorRangeToRow,
+    ThroughputController throughputController, User user) throws IOException {
+    StringBuilder sb = new StringBuilder();
+    sb.append("Executing compaction with " + targetBoundaries.size() / 2 + " boundaries:");
+    for (int j = 0; j < targetBoundaries.size(); j = j + 2) {
+      byte[] left = targetBoundaries.get(j);
+      byte[] right = targetBoundaries.get(j + 1);
+      sb.append(" [").append(Bytes.toString(left)).append(Bytes.toString(right)).append("]");
+    }
+    LOG.info(sb.toString());
+    return compact(request, new DPCompactor.DPInternalScannerFactory(majorRangeFromRow, majorRangeToRow),
+      new CellSinkFactory<DPBoundaryMultiFileWriter>() {
+        @Override
+        public DPBoundaryMultiFileWriter createWriter(InternalScanner scanner, FileDetails fd,
+          boolean shouldDropBehind, boolean major, Consumer<Path> writerCreationTracker) throws IOException {
+          DPBoundaryMultiFileWriter writer = new DPBoundaryMultiFileWriter(store.getComparator(),
+            doCA2GetDPBoundaries(targetBoundaries, scanner), majorRangeFromRow, majorRangeToRow);
+          initMultiWriter(writer, scanner, fd, shouldDropBehind, major, writerCreationTracker);
+          return writer;
+        }
+      }, throughputController, user);
+  }
+
+  private List<byte[]> doCA2GetDPBoundaries(List<byte[]> oldBoundaries, InternalScanner scanner) throws IOException {
+    List<Cell> kvs = new ArrayList<>();
+    List<byte[]> rowKeys = new ArrayList<>();
+
+    boolean hasMore;
+    int flagForDebug = 0;
+    do {
+      hasMore = scanner.next(kvs);
+      if (!kvs.isEmpty()) {
+        for (Cell cell : kvs) {
+          KeyValue kv = (KeyValue) cell;
+          final byte[] rowArray = kv.getKey();
+          if (flagForDebug < 3) {
+            LOG.info("In Compaction, Key String:{}", kv.getKeyString());
+          }
+          byte[] rowArrayCopy = new byte[rowArray.length];
+          System.arraycopy(rowArray, 0, rowArrayCopy, 0, rowArray.length);
+          rowKeys.add(rowArrayCopy);
+        }
+        kvs.clear();
+      }
+      ++flagForDebug;
+    } while (hasMore);
+
+    DPClusterAnalysis dpCA = new DPClusterAnalysis();
+    dpCA.loadData(rowKeys);
+    dpCA.setOldDPBoundaries(oldBoundaries);
+    dpCA.setKernels();
+    dpCA.kMeans();
+    return dpCA.getDpBoundaries();
+  }
+
   @Override protected List<Path> commitWriter(DPBoundaryMultiFileWriter writer, FileDetails fd,
     CompactionRequestImpl request) throws IOException {
-    return null;
+    List<Path> newFiles = writer.commitWriters(fd.maxSeqId, request.isMajor(), request.getFiles());
+    assert !newFiles.isEmpty() : "Should have produced an empty file to preserve metadata.";
+    return newFiles;
   }
 
   private final class DPInternalScannerFactory implements InternalScannerFactory {
@@ -57,30 +119,5 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
         : DPCompactor.this.createScanner(store, scanInfo, scanners, smallestReadPoint,
         fd.earliestPutTs, majorRangeFromRow, majorRangeToRow);
     }
-  }
-
-  public List<Path> compact(CompactionRequestImpl request, final List<byte[]> targetBoundaries,
-    final byte[] majorRangeFromRow, final byte[] majorRangeToRow,
-    ThroughputController throughputController, User user) throws IOException {
-    StringBuilder sb = new StringBuilder();
-    sb.append("Executing compaction with " + targetBoundaries.size() / 2 + " boundaries:");
-    for (int j = 0; j < targetBoundaries.size(); j = j + 2) {
-      byte[] left = targetBoundaries.get(j);
-      byte[] right = targetBoundaries.get(j + 1);
-      sb.append(" [").append(Bytes.toString(left)).append(Bytes.toString(right)).append("]");
-    }
-    LOG.info(sb.toString());
-    return compact(request, new DPCompactor.DPInternalScannerFactory(majorRangeFromRow, majorRangeToRow),
-      new CellSinkFactory<DPBoundaryMultiFileWriter>() {
-        @Override
-        public DPBoundaryMultiFileWriter createWriter(InternalScanner scanner, FileDetails fd,
-          boolean shouldDropBehind, boolean major, Consumer<Path> writerCreationTracker)
-          throws IOException {
-          DPBoundaryMultiFileWriter writer = new DPBoundaryMultiFileWriter(store.getComparator(),
-            targetBoundaries, majorRangeFromRow, majorRangeToRow);
-          initMultiWriter(writer, scanner, fd, shouldDropBehind, major, writerCreationTracker);
-          return writer;
-        }
-      }, throughputController, user);
   }
 }

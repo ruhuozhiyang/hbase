@@ -88,9 +88,9 @@ public class ExploringCompactionPolicy extends RatioBasedCompactionPolicy {
         if (potentialMatchFiles.size() < minFiles) {
           continue;
         }
-//        if (potentialMatchFiles.size() > maxFiles) {
-//          continue;
-//        }
+        if (potentialMatchFiles.size() > maxFiles) {
+          continue;
+        }
 
         // Compute the total size of files that will
         // have to be read if this set of files is compacted.

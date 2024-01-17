@@ -6,12 +6,12 @@ import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.regionserver.compactions.DPCompactionPolicy;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ConcatenatedLists;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableCollection;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.io.IOException;
@@ -28,6 +28,7 @@ import java.util.*;
  * Compaction produces one SSTable per new DP (if any); that is easy to change. - Compaction has
  * one contiguous set of DPs both in and out.
  */
+@InterfaceAudience.Private
 public class DPStoreFileManager implements StoreFileManager, DPInformationProvider {
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreFileManager.class);
   /**
@@ -152,7 +153,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
           leftBoundary = startRow;
           continue;
         }
-        if (MAP_COMPARATOR.compare(startRow, leftBoundary) < 0){
+        if (startRow == OPEN_KEY || MAP_COMPARATOR.compare(startRow, leftBoundary) < 0){
           leftBoundary = startRow;
         }
       }
@@ -188,7 +189,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     sb.append("\n" + string + "; current dPartition state is as such:");
     sb.append("\n level 0 with ").append(state.level0Files.size())
       .append(" files: " + StringUtils.TraditionalBinaryPrefix
-        .long2String(DPCompactionPolicy.getTotalFileSize(state.level0Files), "", 1) + ";");
+        .long2String(getTotalFileSize(state.level0Files), "", 1) + ";");
     for (int i = 0; i < state.dpFiles.size(); ++i) {
       String startRow = (i == 0)
         ? "(start)"
@@ -200,7 +201,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
         .append("\n dPartition ending in ").append(endRow).append(" with ")
         .append(state.dpFiles.get(i).size())
         .append(" files: " + StringUtils.TraditionalBinaryPrefix.long2String(
-          DPCompactionPolicy.getTotalFileSize(state.dpFiles.get(i)), "", 1) + ";");
+          getTotalFileSize(state.dpFiles.get(i)), "", 1) + ";");
     }
     sb.append("\n").append(state.dpFiles.size()).append(" dPartition total.");
     sb.append("\n").append(getStorefileCount()).append(" files total.");
@@ -339,6 +340,8 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
       // Create a lazy mutable copy (other fields are so lazy they start out as nulls).
       this.dPFiles = new ArrayList<>(DPStoreFileManager.this.state.dpFiles);
       this.isFlush = isFlush;
+      this.dPBoundaries =
+        new ArrayList<>(Arrays.asList(DPStoreFileManager.this.state.dPBoundaries));
     }
 
     private void mergeResults(Collection<HStoreFile> compactedFiles,
@@ -375,9 +378,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
       DPStoreFileManager.State newState = new DPStoreFileManager.State();
       newState.level0Files =
         (this.level0Files == null) ? oldState.level0Files : ImmutableList.copyOf(this.level0Files);
-      newState.dPBoundaries = (this.dPBoundaries == null)
-        ? oldState.dPBoundaries
-        : this.dPBoundaries.toArray(new byte[this.dPBoundaries.size()][]);
+      newState.dPBoundaries = this.dPBoundaries.toArray(new byte[this.dPBoundaries.size()][]);
       newState.dpFiles = new ArrayList<>(this.dPFiles.size());
       for (List<HStoreFile> newDPartition : this.dPFiles) {
         newState.dpFiles.add(newDPartition instanceof ImmutableList<?>
@@ -461,8 +462,11 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
         }
         if (!this.dPFiles.isEmpty()) {
           int dPartitionIndex = findDPartitionIndexByEndRow(endRow);
-          if ((dPartitionIndex >= 0) && rowEquals(getStartRow(dPartitionIndex), startRow)) {
+          if ((dPartitionIndex >= 0)) {
             insertFileIntoDPartition(getDPartitionCopy(dPartitionIndex), sf);
+            if (Bytes.compareTo(startRow, getStartRow(dPartitionIndex)) < 0) {
+              this.dPBoundaries.set((2 * dPartitionIndex), startRow);
+            }
             continue;
           }
         }
@@ -504,8 +508,6 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     private void processNewDPartitions(TreeMap<byte[], HStoreFile> newDPartitions) {
       // Validate that the removed and added aggregate ranges still make for a full key space.
       boolean hasDPartitions = !this.dPFiles.isEmpty();
-      this.dPBoundaries =
-        new ArrayList<>(Arrays.asList(DPStoreFileManager.this.state.dPBoundaries));
       int removeFrom = 0;
       byte[] newFirstStartRow = startOf(newDPartitions.firstEntry().getValue());
       byte[] newLastEndRow = newDPartitions.lastKey();
@@ -522,7 +524,6 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
           if (removeFrom < 0) {
             throw new IllegalStateException("Compaction is trying to add a bad range.");
           }
-          ++removeFrom;
         }
         int removeTo = findDPartitionIndexByEndRow(newLastEndRow);
         if (removeTo < 0) {
@@ -538,13 +539,13 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
           // Unfortunately, we cannot tell them apart without looking at timing or something
           // like that. We will assume we are dealing with a flush and dump it into L0.
           if (isFlush) {
-            long newSize = DPCompactionPolicy.getTotalFileSize(newDPartitions.values());
+            long newSize = getTotalFileSize(newDPartitions.values());
             LOG.warn("DPartitions were created by a flush, but results of size " + newSize
               + " cannot be added because the DPartitions have changed");
             canAddNewDPartitions = false;
             filesForL0 = newDPartitions.values();
           } else {
-            long oldSize = DPCompactionPolicy.getTotalFileSize(conflictingFiles);
+            long oldSize = getTotalFileSize(conflictingFiles);
             LOG.info(conflictingFiles.size() + " conflicting files (likely created by a flush) "
               + " of size " + oldSize + " are moved to L0 due to concurrent DPartitions change");
             filesForL0 = conflictingFiles;
@@ -558,11 +559,11 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
         }
 
         if (canAddNewDPartitions) {
-          // Remove old empty stripes.
           int originalCount = this.dPFiles.size();
           for (int removeIndex = removeTo; removeIndex >= removeFrom; --removeIndex) {
             if (removeIndex != originalCount - 1) {
-              this.dPBoundaries.remove(removeIndex);
+              this.dPBoundaries.remove((2 * removeIndex));
+              this.dPBoundaries.remove((2 * removeIndex) + 1);
             }
             this.dPFiles.remove(removeIndex);
           }
@@ -577,13 +578,12 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
       byte[] previousEndRow = null;
       int insertAt = removeFrom;
       for (Map.Entry<byte[], HStoreFile> newDPartition : newDPartitions.entrySet()) {
+        byte[] startRow = startOf(newDPartition.getValue());
         if (previousEndRow != null) {
-          // Validate that the ranges are contiguous.
           assert !isOpen(previousEndRow);
-          byte[] startRow = startOf(newDPartition.getValue());
-          if (!rowEquals(previousEndRow, startRow)) {
+          if (Bytes.compareTo(startRow, previousEndRow) < 0) {
             throw new IllegalStateException("The new dPartitions produced by "
-              + (isFlush ? "flush" : "compaction") + " are not contiguous");
+              + (isFlush ? "flush" : "compaction") + " are not legal.");
           }
         }
         // Add the new DPartitions.
@@ -592,11 +592,20 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
         dPFiles.add(insertAt, tmp);
         previousEndRow = newDPartition.getKey();
         if (!isOpen(previousEndRow)) {
-          dPBoundaries.add(insertAt, previousEndRow);
+          dPBoundaries.add((2 * insertAt), startRow);
+          dPBoundaries.add((2 * insertAt) + 1, previousEndRow);
         }
         ++insertAt;
       }
     }
+  }
+
+  private long getTotalFileSize(final Collection<HStoreFile> candidates) {
+    long totalSize = 0;
+    for (HStoreFile storeFile : candidates) {
+      totalSize += storeFile.getReader().length();
+    }
+    return totalSize;
   }
 
   /**

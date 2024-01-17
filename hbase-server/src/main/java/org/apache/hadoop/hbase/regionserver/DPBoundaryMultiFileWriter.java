@@ -4,6 +4,7 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.io.IOException;
@@ -13,6 +14,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
+@InterfaceAudience.Private
 public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   private static final Logger LOG = LoggerFactory.getLogger(DPBoundaryMultiFileWriter.class);
   protected final CellComparator cellComparator;
@@ -56,7 +58,7 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
 
   @Override
   public void append(Cell cell) throws IOException {
-    if (!checkWhetherInDPartition(this.boundaries, cell)) {
+    if (!checkWhetherInDPartitions(this.boundaries, cell)) {
       this.writerForL0.append(cell);
       return;
     }
@@ -66,21 +68,20 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
     ++this.cellsInCurrentWriter;
   }
 
-  private boolean checkWhetherInDPartition(List<byte[]> boundaries, Cell cell) {
+  private boolean checkWhetherInDPartitions(List<byte[]> boundaries, Cell cell) {
     int i = Collections.binarySearch(boundaries, ((KeyValue) cell).getKey(), Bytes.BYTES_COMPARATOR);
     if (i >= 0) {
       return i % 2 == 0 ? true : false;
     } else {
-      return (Math.abs(i) % 2) == 0 ? false : true;
+      return (Math.abs(i + 1) % 2) == 0 ? false : true;
     }
   }
 
   private void prepareWriterFor(Cell cell) throws IOException {
     if (currentWriter != null && !isCellAfterCurrentWriter(cell)) {
-      return; // Use current writer.
+      return;
     }
     stopUsingCurrentWriter();
-    // See if KV will be past the writer we are about to create; need to add another one.
     while (isCellAfterCurrentWriter(cell)) {
       checkCanCreateWriter();
       createEmptyWriter();
@@ -103,7 +104,7 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
       cellsInCurrentWriter = 0;
     }
     currentWriter = null;
-    currentWriterEndKey = (existingWriters.size() == (boundaries.size() / 2))
+    currentWriterEndKey = ((existingWriters.size() - 1) == (boundaries.size() / 2))
       ? null
       : boundaries.get((2 * existingWriters.size()) - 1);
   }
@@ -137,7 +138,7 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
     boolean needEmptyFile = isInMajorRange || isLastWriter;
     existingWriters.add(needEmptyFile ? writerFactory.createWriter() : null);
     hasAnyDPartitionWriter |= needEmptyFile;
-    currentWriterEndKey = (existingWriters.size() == (boundaries.size() / 2))
+    currentWriterEndKey = ((existingWriters.size() - 1) == (boundaries.size() / 2))
       ? null
       : boundaries.get((2 * existingWriters.size()) - 1);
   }
@@ -169,26 +170,9 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
     LOG.info("Write DPartition metadata for " + writer.getPath().toString());
     int index = existingWriters.indexOf(writer);
     if (index > 0) {
+      index -= 1;
       writer.appendFileInfo(DPStoreFileManager.DP_START_KEY, boundaries.get(2 * index));
       writer.appendFileInfo(DPStoreFileManager.DP_END_KEY, boundaries.get(2 * index + 1));
-    }
-  }
-
-  /**
-   * Subclasses can call this method to make sure the first KV is within multi-writer range.
-   * @param left The left boundary of the writer.
-   * @param cell The cell whose row has to be checked.
-   */
-  protected void sanityCheckLeft(byte[] left, Cell cell) throws IOException {
-    if (
-      !Arrays.equals(DPStoreFileManager.OPEN_KEY, left)
-        && cellComparator.compareRows(cell, left, 0, left.length) < 0
-    ) {
-      String error =
-        "The first row is lower than the left boundary of [" + Bytes.toString(left) + "]: ["
-          + Bytes.toString(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength()) + "]";
-      LOG.error(error);
-      throw new IOException(error);
     }
   }
 

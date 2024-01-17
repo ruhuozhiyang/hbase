@@ -45,3 +45,7 @@ minCompactSize = conf.getLong(HBASE_HSTORE_COMPACTION_MIN_SIZE_KEY, storeConfigI
 minFilesToCompact = Math.max(2, conf.getInt(HBASE_HSTORE_COMPACTION_MIN_KEY, conf.getInt("hbase.hstore.compactionThreshold", 3)));
 整个候选文件队列文件的数量
 maxFilesToCompact = conf.getInt(HBASE_HSTORE_COMPACTION_MAX_KEY, 10);
+
+
+create 'perf-test', {NAME=>'o', METADATA=>{'DFS_REPLICATION'=>1}}, {DURABILITY=>'SKIP_WAL'}
+bin/ycsb load hbase20 -P workloads/compactionTestWorkloadb -cp /opt/hbase-2.5.6-partition/conf/ -p columnfamily=o -p fieldcount=1 -p fieldlength=10240 -p recordcount=2000000 -p table='perf-test' -s -threads 80

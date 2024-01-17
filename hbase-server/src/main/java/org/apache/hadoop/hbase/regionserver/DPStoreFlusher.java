@@ -4,14 +4,16 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -127,14 +129,11 @@ public class DPStoreFlusher extends StoreFlusher{
         hasMore = scanner.next(kvs);
         if (!kvs.isEmpty()) {
           for (Cell cell : kvs) {
-            KeyValue kv = (KeyValue) cell;
-            final byte[] rowArray = kv.getKey();
+            byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
             if (flagForDebug < 3) {
-              LOG.info("Key String:{}", kv.getKeyString());
+              LOG.info("Key String:{}", Bytes.toString(rowArray));
             }
-            byte[] rowArrayCopy = new byte[rowArray.length];
-            System.arraycopy(rowArray, 0, rowArrayCopy, 0, rowArray.length);
-            rowKeys.add(rowArrayCopy);
+            rowKeys.add(rowArray);
           }
           kvs.clear();
         }

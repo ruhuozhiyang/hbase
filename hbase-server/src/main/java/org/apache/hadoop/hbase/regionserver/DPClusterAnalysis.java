@@ -100,18 +100,19 @@ public class DPClusterAnalysis {
   }
 
   public void setDpBoundaries() {
+    int cIndex = 4;
     int kernelsDis = Math.abs(Bytes.compareTo(this.initKernel.get(0), this.initKernel.get(1))) / 2;
     byte[] o = this.initKernel.get(0);
 
     byte[] l = new byte[o.length];
     System.arraycopy(o, 0, l, 0, o.length);
-    int nl = (l[0] & 0xFF) - kernelsDis;
-    l[0] = (byte) (nl < 48 ? 48 : nl);
+    int nl = (l[cIndex] & 0xFF) - kernelsDis;
+    l[cIndex] = (byte) (nl < 48 ? 48 : nl);
 
     byte[] r = new byte[o.length];
     System.arraycopy(o, 0, r, 0, o.length);
-    int nr = (r[0] & 0xFF) + kernelsDis;
-    r[0] = (byte) (nr > 57 ? 57 : nr);
+    int nr = (r[cIndex] & 0xFF) + kernelsDis;
+    r[cIndex] = (byte) (nr > 57 ? 57 : nr);
 
     if (oldDPBoundaries != null) {
       final int startIndex = Collections.binarySearch(oldDPBoundaries, l, Bytes.BYTES_COMPARATOR);

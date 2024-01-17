@@ -2,17 +2,13 @@ package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 @InterfaceAudience.Private
 public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
@@ -21,7 +17,7 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   protected List<StoreFileWriter> existingWriters;
   protected List<byte[]> boundaries;
 
-  private StoreFileWriter writerForL0;
+  private StoreFileWriter writerForL0 = null;
   private StoreFileWriter currentWriter;
   private byte[] currentWriterEndKey;
   private Cell lastCell;
@@ -32,11 +28,9 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   public DPBoundaryMultiFileWriter(CellComparator cellComparator, List<byte[]> targetBoundaries,
     byte[] majorRangeFrom, byte[] majorRangeTo) throws IOException {
     this.cellComparator = cellComparator;
-    this.writerForL0 = writerFactory.createWriter();
     this.boundaries = targetBoundaries;
 
     this.existingWriters = new ArrayList<>((this.boundaries.size() / 2) + 1);
-    this.existingWriters.add(this.writerForL0);
 
     // "major" range (range for which all files are included) boundaries, if any,
     // must match some target boundaries, let's find them.
@@ -58,6 +52,10 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
 
   @Override
   public void append(Cell cell) throws IOException {
+    if (this.writerForL0 == null) {
+      this.writerForL0 = writerFactory.createWriter();
+      this.existingWriters.add(this.writerForL0);
+    }
     if (!checkWhetherInDPartitions(this.boundaries, cell)) {
       this.writerForL0.append(cell);
       return;
@@ -69,7 +67,8 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   }
 
   private boolean checkWhetherInDPartitions(List<byte[]> boundaries, Cell cell) {
-    int i = Collections.binarySearch(boundaries, ((KeyValue) cell).getKey(), Bytes.BYTES_COMPARATOR);
+    byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+    int i = Collections.binarySearch(boundaries, rowArray, Bytes.BYTES_COMPARATOR);
     if (i >= 0) {
       return i % 2 == 0 ? true : false;
     } else {

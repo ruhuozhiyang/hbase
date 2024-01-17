@@ -75,6 +75,7 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
     dpCA.setOldDPBoundaries(oldBoundaries);
     dpCA.setKernels();
     dpCA.kMeans();
+    dpCA.setDpBoundaries();
     return dpCA.getDpBoundaries();
   }
 

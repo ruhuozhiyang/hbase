@@ -116,7 +116,7 @@ public class DPStoreFlusher extends StoreFlusher{
       List<byte[]> dpBoundaries = doCA2GetDPBoundaries();
       LOG.info("Get dpBoundaries:{} by DP Cluster Analysis.", dpBoundaries.toString());
       return new DPBoundaryMultiFileWriter(cellComparator, dpBoundaries,
-        null, null);
+              null, null);
     }
 
     private List<byte[]> doCA2GetDPBoundaries() throws IOException {
@@ -144,6 +144,7 @@ public class DPStoreFlusher extends StoreFlusher{
       dpCA.loadData(rowKeys);
       dpCA.setKernels();
       dpCA.kMeans();
+      dpCA.setDpBoundaries();
       return dpCA.getDpBoundaries();
     }
   }

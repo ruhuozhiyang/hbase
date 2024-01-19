@@ -17,16 +17,19 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   protected List<StoreFileWriter> existingWriters;
   protected List<byte[]> boundaries;
 
-  private StoreFileWriter writerForL0 = null;
+  private StoreFileWriter writerForL0;
   private StoreFileWriter currentWriter;
   private byte[] currentWriterEndKey;
   private Cell lastCell;
   private long cellsInCurrentWriter = 0;
   private int majorRangeFromIndex = -1, majorRangeToIndex = -1;
   private boolean hasAnyDPartitionWriter = false;
+  private  DPAreaOfTS ats;
 
   public DPBoundaryMultiFileWriter(CellComparator cellComparator, List<byte[]> targetBoundaries,
-    byte[] majorRangeFrom, byte[] majorRangeTo) throws IOException {
+    byte[] majorRangeFrom, byte[] majorRangeTo, DPAreaOfTS ats) throws IOException {
+    this.ats = ats;
+
     this.cellComparator = cellComparator;
     this.boundaries = targetBoundaries;
 
@@ -50,14 +53,16 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
     }
   }
 
+  public void initWriterForL0() throws IOException {
+    assert this.writerFactory != null && this.existingWriters != null && this.writerForL0 == null;
+    this.writerForL0 = this.writerFactory.createWriter();
+    this.existingWriters.add(this.writerForL0);
+  }
+
   @Override
   public void append(Cell cell) throws IOException {
-    if (this.writerForL0 == null) {
-      this.writerForL0 = writerFactory.createWriter();
-      this.existingWriters.add(this.writerForL0);
-    }
     if (!checkWhetherInDPartitions(this.boundaries, cell)) {
-      this.writerForL0.append(cell);
+      this.ats.add(cell);
       return;
     }
     prepareWriterFor(cell);

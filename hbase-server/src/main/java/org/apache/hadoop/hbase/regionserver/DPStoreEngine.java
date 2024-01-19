@@ -23,6 +23,8 @@ public class DPStoreEngine extends
   StoreEngine<DPStoreFlusher, DPCompactionPolicy, DPCompactor, DPStoreFileManager>{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreEngine.class);
   private DPStoreConfig config;
+  private DPAreaOfTS ats;
+
   @Override
   public boolean needsCompaction(List filesCompacting) {
     return this.compactionPolicy.needsCompactions(this.storeFileManager, filesCompacting);
@@ -30,21 +32,29 @@ public class DPStoreEngine extends
 
   @Override
   public CompactionContext createCompaction() throws IOException {
-    return new DPCompaction();
+    final DPCompaction dpCompaction = new DPCompaction();
+    dpCompaction.setAts(this.ats);
+    return dpCompaction;
   }
 
   @Override
   protected void createComponents(Configuration conf, HStore store, CellComparator cellComparator)
     throws IOException {
+    this.ats = new DPAreaOfTS(store, conf);
     this.config = new DPStoreConfig(conf);
     this.compactionPolicy = new DPCompactionPolicy(conf, store, this.config);
     this.compactor = new DPCompactor(conf, store);
     this.storeFileManager = new DPStoreFileManager(cellComparator, conf, this.config);
-    this.storeFlusher = new DPStoreFlusher(conf, store, this.storeFileManager);
+    this.storeFlusher = new DPStoreFlusher(conf, store, this.storeFileManager, this.ats);
   }
 
   private class DPCompaction extends CompactionContext {
     private DPCompactionPolicy.DPCompactionRequest dPRequest = null;
+    private DPAreaOfTS ats;
+
+    public void setAts(DPAreaOfTS ats) {
+      this.ats = ats;
+    }
 
     @Override
     public List<HStoreFile> preSelect(List<HStoreFile> filesCompacting) {
@@ -76,7 +86,7 @@ public class DPStoreEngine extends
     public List<Path> compact(ThroughputController throughputController, User user)
       throws IOException {
       Preconditions.checkArgument(this.dPRequest != null, "Cannot compact without selection");
-      return this.dPRequest.execute(compactor, throughputController, user);
+      return this.dPRequest.execute(compactor, throughputController, user, this.ats);
     }
   }
 }

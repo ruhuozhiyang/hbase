@@ -2,6 +2,8 @@ package org.apache.hadoop.hbase.regionserver;
 
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -11,17 +13,19 @@ import java.util.stream.Collectors;
 
 @InterfaceAudience.Private
 public class DPClusterAnalysis {
+  private static final Logger LOG = LoggerFactory.getLogger(DPClusterAnalysis.class);
   private List<byte[]> inData = new ArrayList<>();
   private List<byte[]> initKernel = new DPArrayList<>();
   private List<byte[]> oldDPBoundaries = null;
-  private List<byte[]> newDPBoundaries = new DPArrayList<>();
+  private List<byte[]> newDPBoundaries = null;
+  private final static int compareIndex = 4;
 
   public void loadData(List<byte[]> data) {
     this.inData = data;
   }
 
   public void setOldDPBoundaries(List<byte[]> oldDPBoundaries) {
-    this.oldDPBoundaries = oldDPBoundaries;
+    this.oldDPBoundaries = new ArrayList<>(oldDPBoundaries);
   }
 
   private class DPArrayList<E> extends ArrayList<E> {
@@ -62,7 +66,7 @@ public class DPClusterAnalysis {
     }
   }
 
-  public boolean setKernels() {
+  public boolean initKernels() {
     int num = 2;
     if (inData.size() < num) {
       return false;
@@ -75,20 +79,19 @@ public class DPClusterAnalysis {
       }
       initKernel.add(inData.get(tmp));
     }
+    serializeKernelOrBoundary2Log(this.initKernel, "[Gen/Update DPBoundaries] Initial Kernels:");
     return true;
   }
 
   public void kMeans() {
-    deBug(this.initKernel, "Initial Kernels");
     while (true) {
       boolean stable = false;
-      List<byte[]> newKernels = iteration(this.initKernel);
+      List<byte[]> newKernels = doIteration2UpdateKernels(this.initKernel);
       final List<String> newKernelsString =
         newKernels.stream().map(ele -> new String(ele)).collect(Collectors.toList());
-      final List<String> initKernelString =
+      final List<String> preKernelString =
         this.initKernel.stream().map(ele -> new String(ele)).collect(Collectors.toList());
-      deBug(newKernels, "Current Kernels");
-      if (newKernelsString.containsAll(initKernelString)) {
+      if (newKernelsString.containsAll(preKernelString)) {
         stable = true;
       }
       if (stable) {
@@ -99,41 +102,85 @@ public class DPClusterAnalysis {
     }
   }
 
-  public void setDpBoundaries() {
-    int cIndex = 4;
-    int kernelsDis = Math.abs(Bytes.compareTo(this.initKernel.get(0), this.initKernel.get(1))) / 2;
-    byte[] o = this.initKernel.get(0);
+  public void prune2GetDPBoundaries() {
+    if (this.initKernel.size() == 1) {
+      throw new RuntimeException("CA Kernels Num is [1].");
+    }
+    final byte[] kernel1 = this.initKernel.get(0);
+    final byte[] kernel2 = this.initKernel.get(1);
+    byte[] o = Bytes.compareTo(kernel1, kernel2) < 0 ? kernel1 : kernel2;
+    final int disTmp = Math.abs(Bytes.compareTo(kernel1, kernel2)) / 2;
+    int kernelsDis = disTmp == 0 ? 1 : disTmp;
 
     byte[] l = new byte[o.length];
     System.arraycopy(o, 0, l, 0, o.length);
-    int nl = (l[cIndex] & 0xFF) - kernelsDis;
-    l[cIndex] = (byte) (nl < 48 ? 48 : nl);
+    int nl = (l[compareIndex] & 0xFF) - kernelsDis;
+    l[compareIndex] = (byte) (nl < 48 ? 48 : nl);
 
     byte[] r = new byte[o.length];
     System.arraycopy(o, 0, r, 0, o.length);
-    int nr = (r[cIndex] & 0xFF) + kernelsDis;
-    r[cIndex] = (byte) (nr > 57 ? 57 : nr);
+    int nr = (r[compareIndex] & 0xFF) + kernelsDis;
+    r[compareIndex] = (byte) (nr > 57 ? 57 : nr);
 
     if (oldDPBoundaries != null) {
+      serializeKernelOrBoundary2Log(oldDPBoundaries, "[Update DPBoundaries] Previous DPBoundaries:");
+      ArrayList<byte[]> newDPBoundaryPair = new ArrayList<>();
+      newDPBoundaryPair.add(l);
+      newDPBoundaryPair.add(r);
+      serializeKernelOrBoundary2Log(newDPBoundaryPair, "[Update DPBoundaries] New DPBoundary Pair For Pruning:");
       final int startIndex = Collections.binarySearch(oldDPBoundaries, l, Bytes.BYTES_COMPARATOR);
       final int endIndex = Collections.binarySearch(oldDPBoundaries, r, Bytes.BYTES_COMPARATOR);
+      LOG.info("[Update DPBoundaries], StartIndex of [{}] is [{}].", new String(l), startIndex);
+      LOG.info("[Update DPBoundaries], EndIndex of [{}] is [{}].", new String(r), endIndex);
       this.newDPBoundaries = new ArrayList<>(this.oldDPBoundaries);
       if (startIndex >= 0 && endIndex > 0) {
         return;
       }
+      int startInsertPoint = Math.abs(startIndex + 1);
       int endInsertPoint = Math.abs(endIndex + 1);
-      if (endInsertPoint > 0 && endInsertPoint % 2 == 0) {
-        if (Bytes.compareTo(l, this.oldDPBoundaries.get(endInsertPoint - 1)) > 0) {
-          this.newDPBoundaries.add(endInsertPoint, l);
-        } else {
-          byte[] ll = new byte[l.length];
-          System.arraycopy(l, 0, ll, 0, l.length);
-          ll[ll.length - 1] = (byte) ((ll[ll.length - 1] & 0xFF) + 1);
-          this.newDPBoundaries.add(endInsertPoint, ll);
+      if (startInsertPoint % 2 == 0 && endInsertPoint % 2 == 0) {
+        if (startInsertPoint != endInsertPoint) return;
+        if (startInsertPoint == endInsertPoint) {
+          this.newDPBoundaries.add(endInsertPoint, r);
+          this.newDPBoundaries.add(startInsertPoint, l);
         }
-        this.newDPBoundaries.add(endInsertPoint + 1, r);
+      }
+      else if (startInsertPoint % 2 == 1 && endInsertPoint % 2 == 0) {
+        for (int i = startInsertPoint; i < endInsertPoint; i++) {
+          byte[] resL;
+          byte[] resR;
+          if (startInsertPoint == endInsertPoint - 1) {
+            final byte[] preEnd = this.oldDPBoundaries.get(endInsertPoint - 1);
+            byte[] ll = new byte[preEnd.length];
+            System.arraycopy(preEnd, 0, ll, 0, l.length);
+            ll[ll.length - 1] = (byte) ((ll[ll.length - 1] & 0xFF) + 1);
+            resL = ll;
+            resR = r;
+          } else if (startInsertPoint % 2 == 1) {
+            final byte[] lef = this.oldDPBoundaries.get(startInsertPoint);
+            final byte[] rig = this.oldDPBoundaries.get(startInsertPoint + 1);
+            byte[] llef = new byte[lef.length];
+            byte[] rrig = new byte[rig.length];
+            System.arraycopy(lef, 0, llef, 0, lef.length);
+            System.arraycopy(rig, 0, rrig, 0, rig.length);
+            llef[llef.length - 1] = (byte) ((llef[llef.length - 1] & 0xFF) + 1);
+            rrig[rrig.length - 1] = (byte) ((rrig[rrig.length - 1] & 0xFF) - 1);
+            resL = llef;
+            resR = rrig;
+          }
+          int insertIndex2 = i > startInsertPoint ? startInsertPoint + 3 : startInsertPoint + 1;
+          this.newDPBoundaries.add(insertIndex2, resL);
+          this.newDPBoundaries.add(insertIndex2, resR);
+        }
+      }
+      else if (startInsertPoint % 2 == 1 && endInsertPoint % 2 == 1) {
+
+      }
+      else if (startInsertPoint % 2 == 0 && endInsertPoint % 2 == 1) {
+
       }
     } else {
+      this.newDPBoundaries = new DPArrayList<>();
       this.newDPBoundaries.add(l);
       this.newDPBoundaries.add(r);
     }
@@ -143,34 +190,56 @@ public class DPClusterAnalysis {
     return this.newDPBoundaries;
   }
 
+  @Deprecated
   public static void boundariesExpansion(List<byte[]> targetBoundaries) {
     for (int i = 0; i < targetBoundaries.size(); i++) {
       if (i % 2 == 0) {
-        final byte[] start = targetBoundaries.get(i);
-        final byte[] end = targetBoundaries.get(i + 1);
-        byte[] newStart;
-        int ns = (start[0] & 0xFF) - 1;
-        if (ns < 48) {
-          newStart = DPStoreFileManager.OPEN_KEY;
+        if (i == 0) {
+          final byte[] start = targetBoundaries.get(i);
+          if (start == DPStoreFileManager.OPEN_KEY) {
+            continue;
+          }
+          final byte[] end = targetBoundaries.get(i + 1);
+          byte[] newStart;
+          int ns = (start[compareIndex] & 0xFF) - 1;
+          if (ns < 48) {
+            newStart = DPStoreFileManager.OPEN_KEY;
+            targetBoundaries.set(i, newStart);
+            continue;
+          } else {
+            newStart = new byte[start.length];
+            System.arraycopy(start, 0, newStart, 0, start.length);
+            newStart[compareIndex] = (byte) ns;
+          }
+          if ((end[compareIndex] & 0xFF) - (newStart[compareIndex] & 0xFF) > 2) {
+            continue;
+          }
           targetBoundaries.set(i, newStart);
-          continue;
         } else {
-          newStart = new byte[start.length];
+          final byte[] preEnd = targetBoundaries.get(i - 1);
+          final byte[] start = targetBoundaries.get(i);
+          final byte[] end = targetBoundaries.get(i + 1);
+          byte[] newStart = new byte[start.length];
           System.arraycopy(start, 0, newStart, 0, start.length);
-          newStart[0] = (byte) ns;
+          newStart[compareIndex] = (byte) ((start[compareIndex] & 0xFF) - 1);
+          if ((newStart[compareIndex] & 0xFF) < 48 || Bytes.compareTo(newStart, preEnd) < 0) {
+            byte[] nNewStart = new byte[preEnd.length];
+            System.arraycopy(preEnd, 0, nNewStart, 0, preEnd.length);
+            nNewStart[nNewStart.length - 1] = (byte) ((preEnd[preEnd.length - 1] & 0xFF) + 1);
+            targetBoundaries.set(i, nNewStart);
+          }
+          if ((end[compareIndex] & 0xFF) - (newStart[compareIndex] & 0xFF) > 2) {
+            continue;
+          }
+          targetBoundaries.set(i, newStart);
         }
-        if ((end[0] & 0xFF) - (newStart[0] & 0xFF) > 2) {
-          continue;
-        }
-        targetBoundaries.set(i, newStart);
       }
     }
   }
 
-  private static void deBug(List<byte[]> kernelOrBoundary, String message) {
+  private static void serializeKernelOrBoundary2Log(List<byte[]> kernelOrBoundary, String message) {
     StringBuilder res = new StringBuilder();
-    res.append(message).append(":");
-    res.append("[");
+    res.append(message).append("[");
     for (int i = 0; i < kernelOrBoundary.size(); i++) {
       res.append(kernelOrBoundary.get(i) == null ? "NULL" : new String(kernelOrBoundary.get(i)));
       if (i < kernelOrBoundary.size() - 1) {
@@ -178,10 +247,10 @@ public class DPClusterAnalysis {
       }
     }
     res.append("]");
-    System.out.println(res);
+    LOG.info(res.toString());
   }
 
-  private List<byte[]> iteration(List<byte[]> kernels) {
+  private List<byte[]> doIteration2UpdateKernels(List<byte[]> kernels) {
     List<byte[]> newKernels = new ArrayList<>(kernels.size());
     List<byte[]> clusters1 = new ArrayList<>();
     List<byte[]> clusters2 = new ArrayList<>();
@@ -210,32 +279,33 @@ public class DPClusterAnalysis {
     if (rowKeysMean2 != null) {
       newKernels.add(rowKeysMean2);
     }
-//    Iterator<byte[]> i = clusters1.iterator();
-//    byte[] min = i.next();
-//    while (i.hasNext()) {
-//      byte[] next = i.next();
-//      if (Bytes.compareTo(next, min) < 0)
-//        min = next;
-//    }
-//    Iterator<byte[]> j = clusters1.iterator();
-//    byte[] max = j.next();
-//    while (j.hasNext()) {
-//      byte[] next = j.next();
-//      if (Bytes.compareTo(next, max) > 0)
-//        max = next;
-//    }
-//    System.out.println(min);
-//    System.out.println("[" + new String(min) + "," + new String(max) + "]");
-//    System.out.println("cluster1:" + clusters1.stream().map(ele -> new String(ele)).collect(Collectors.toList()));
-//    System.out.println("cluster2:" + clusters2.stream().map(ele -> new String(ele)).collect(Collectors.toList()));
     return newKernels;
+  }
+
+  @Deprecated
+  private void printClusterInfoForTest(List<byte[]> cluster, int num) {
+    Iterator<byte[]> i = cluster.iterator();
+    byte[] min = i.next();
+    while (i.hasNext()) {
+      byte[] next = i.next();
+      if (Bytes.compareTo(next, min) < 0)
+        min = next;
+    }
+    Iterator<byte[]> j = cluster.iterator();
+    byte[] max = j.next();
+    while (j.hasNext()) {
+      byte[] next = j.next();
+      if (Bytes.compareTo(next, max) > 0)
+        max = next;
+    }
+    System.out.println("Cluster" + num + " Range:[" + new String(min) + "," + new String(max) + "]");
+    System.out.println("Cluster" + num + " Elements:" + cluster.stream().map(ele -> new String(ele)).collect(Collectors.toList()));
   }
 
   private int target2Kernel(byte[] rowKey, List<byte[]> kernels) {
     int index = 0;
     float smallDis = Integer.MAX_VALUE;
     for (int i = 0; i < kernels.size(); i++) {
-//      float dis = getSimilarityRatio(new String(rowKey), new String(kernels.get(i)));
       int dis = get2RowKeysDistance(rowKey, kernels.get(i));
       if (dis < smallDis) {
         smallDis = dis;
@@ -268,54 +338,22 @@ public class DPClusterAnalysis {
     return rowKeysMeanByte;
   }
 
-  private static String genString(int length) {
-//    String KeyString = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    String KeyString = "0123456789";
-    int len = KeyString.length();
+  private static String genStringForTest(int length) {
+    String numAndCharsSource = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    String numSource = "0123456789";
+    int len = numSource.length();
     StringBuffer sb = new StringBuffer();
     for(int i = 0; i < length; i++){
-      sb.append(KeyString.charAt((int) Math.round(Math.random()*(len-1))));
+      sb.append(numSource.charAt((int) Math.round(Math.random()*(len-1))));
     }
     return sb.toString();
-  }
-
-  @Deprecated
-  private float getSimilarityRatio(String str, String target) {
-    int d[][];
-    int n = str.length();
-    int m = target.length();
-    int i, j, temp;
-    char ch1, ch2;
-    if (n == 0 || m == 0) {
-      return 100.0F;
-    }
-    d = new int[n + 1][m + 1];
-    for (i = 0; i <= n; i++) {
-      d[i][0] = i;
-    }
-    for (j = 0; j <= m; j++) {
-      d[0][j] = j;
-    }
-    for (i = 1; i <= n; i++) {
-      ch1 = str.charAt(i - 1);
-      for (j = 1; j <= m; j++) {
-        ch2 = target.charAt(j - 1);
-        if (ch1 == ch2 || ch1 == ch2 + 32 || ch1 + 32 == ch2) {
-          temp = 0;
-        } else {
-          temp = 1;
-        }
-        d[i][j] = Math.min(Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1), d[i - 1][j - 1] + temp);
-      }
-    }
-    return (1 - (float) d[n][m] / Math.max(str.length(), target.length())) * 100F;
   }
 
   public static void main(String[] args) {
     List<byte[]> data = new ArrayList<>();
     Random random = new Random();
     for (int i = 0; i < 1000; i++) {
-      String a = genString(random.nextInt(13) + 1);
+      String a = genStringForTest(random.nextInt(13) + 1);
       data.add(Bytes.toBytes(a));
       data.add(Bytes.toBytes(String.valueOf(i)));
     }
@@ -325,12 +363,21 @@ public class DPClusterAnalysis {
     for (int i = 8000; i < 10000; i++) {
       data.add(Bytes.toBytes(String.valueOf(i)));
     }
-    DPClusterAnalysis  dpCA = new DPClusterAnalysis();
+    DPClusterAnalysis dpCA = new DPClusterAnalysis();
     dpCA.loadData(data);
-    dpCA.setKernels();
+    dpCA.initKernels();
     dpCA.kMeans();
-    dpCA.setDpBoundaries();
-    deBug(dpCA.getDpBoundaries(), "CA Boundary");
+    dpCA.prune2GetDPBoundaries();
+    serializeKernelOrBoundary2Log(dpCA.getDpBoundaries(), "CA Boundary:");
+
+//    ArrayList<Integer> test = new ArrayList<>();
+//    test.add(1);
+//    test.add(5);
+//    test.add(7);
+//    test.add(9);
+//    test.add(1, 2);
+//    test.add(1,3);
+//    System.out.println(test); // [1, 3, 2, 5, 7, 9]
 
 //    byte[] test = null;
 //    byte[] INVALID_KEY = null;

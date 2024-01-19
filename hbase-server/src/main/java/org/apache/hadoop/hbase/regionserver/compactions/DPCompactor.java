@@ -10,7 +10,6 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -21,19 +20,20 @@ import java.util.function.Consumer;
 public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFileWriter>{
   private static final Logger LOG = LoggerFactory.getLogger(DPCompactor.class);
 
+
   public DPCompactor(Configuration conf, HStore store) {
     super(conf, store);
   }
 
   public List<Path> compact(CompactionRequestImpl request, final List<byte[]> targetBoundaries,
     final byte[] majorRangeFromRow, final byte[] majorRangeToRow,
-    ThroughputController throughputController, User user) throws IOException {
+    ThroughputController throughputController, User user, DPAreaOfTS ats) throws IOException {
     StringBuilder sb = new StringBuilder();
     sb.append("Executing compaction with " + targetBoundaries.size() / 2 + " boundaries:");
     for (int j = 0; j < targetBoundaries.size(); j = j + 2) {
       byte[] left = targetBoundaries.get(j);
       byte[] right = targetBoundaries.get(j + 1);
-      sb.append(" [").append(Bytes.toString(left)).append(Bytes.toString(right)).append("]");
+      sb.append(" [").append(Bytes.toString(left)).append(",").append(Bytes.toString(right)).append("]");
     }
     LOG.info(sb.toString());
     return compact(request, new DPCompactor.DPInternalScannerFactory(majorRangeFromRow, majorRangeToRow),
@@ -42,8 +42,9 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
         public DPBoundaryMultiFileWriter createWriter(InternalScanner scanner, FileDetails fd,
           boolean shouldDropBehind, boolean major, Consumer<Path> writerCreationTracker) throws IOException {
           DPBoundaryMultiFileWriter writer = new DPBoundaryMultiFileWriter(store.getComparator(),
-            doCA2GetDPBoundaries(targetBoundaries, scanner), majorRangeFromRow, majorRangeToRow);
+            targetBoundaries, majorRangeFromRow, majorRangeToRow, ats);
           initMultiWriter(writer, scanner, fd, shouldDropBehind, major, writerCreationTracker);
+          writer.initWriterForL0();
           return writer;
         }
       }, throughputController, user);
@@ -59,7 +60,8 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
       hasMore = scanner.next(kvs);
       if (!kvs.isEmpty()) {
         for (Cell cell : kvs) {
-          byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+          byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(),
+            (cell.getRowOffset() + cell.getRowLength() - 1));
           if (flagForDebug < 3) {
             LOG.info("In Compaction, Key String:{}", Bytes.toString(rowArray));
           }
@@ -72,10 +74,10 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
 
     DPClusterAnalysis dpCA = new DPClusterAnalysis();
     dpCA.loadData(rowKeys);
-    dpCA.setOldDPBoundaries(oldBoundaries);
-    dpCA.setKernels();
+    dpCA.initKernels();
     dpCA.kMeans();
-    dpCA.setDpBoundaries();
+    dpCA.setOldDPBoundaries(oldBoundaries);
+    dpCA.prune2GetDPBoundaries();
     return dpCA.getDpBoundaries();
   }
 

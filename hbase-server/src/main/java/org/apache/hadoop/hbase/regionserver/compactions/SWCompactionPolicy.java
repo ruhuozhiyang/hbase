@@ -141,8 +141,9 @@ public class SWCompactionPolicy extends RatioBasedCompactionPolicy {
   }
 
   private long getHStoreFilesRangeSize(List<HStoreFile> pmf) {
-    final LongStream longStream = pmf.stream().mapToLong(sf -> sf.getReader().length());
-    return longStream.max().getAsLong() - longStream.min().getAsLong();
+    final long max = pmf.stream().mapToLong(sf -> sf.getReader().length()).max().getAsLong();
+    final long min = pmf.stream().mapToLong(sf -> sf.getReader().length()).min().getAsLong();
+    return max - min;
   }
 
   private void sizeOfSSTInCompactionRecord(String flag, List<HStoreFile> bestSelection) {

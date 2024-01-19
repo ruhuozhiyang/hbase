@@ -2,10 +2,9 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.regionserver.DPClusterAnalysis;
+import org.apache.hadoop.hbase.regionserver.DPAreaOfTS;
 import org.apache.hadoop.hbase.regionserver.DPInformationProvider;
 import org.apache.hadoop.hbase.regionserver.DPStoreConfig;
-import org.apache.hadoop.hbase.regionserver.DPStoreFileManager;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
 import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
 import org.apache.hadoop.hbase.regionserver.StoreUtils;
@@ -59,6 +58,7 @@ public class DPCompactionPolicy extends CompactionPolicy {
     int minFiles = this.dpStoreConfig.getDPartitionCompactMinFiles();
     for (List<HStoreFile> dPartition : di.getDPs()) {
       if (dPartition.size() >= minFiles) {
+        LOG.info("Need to Single DPartition Compaction, Files Num:{}.", dPartition.size());
         return true;
       }
     }
@@ -158,26 +158,21 @@ public class DPCompactionPolicy extends CompactionPolicy {
     return compactionSize > comConf.getThrottlePoint();
   }
 
-  /** Dynamic partition compaction request wrapper. */
+  /**
+   * The further wrapper of Dynamic-partition compaction request.
+   */
   public static class DPCompactionRequest {
     private CompactionRequestImpl request;
-    private final List<byte[]> targetBoundaries;
+    private final List<byte[]> dPBoundaries;
     protected byte[] majorRangeFromRow = null, majorRangeToRow = null;
 
-    public DPCompactionRequest(CompactionRequestImpl request,
-      List<byte[]> targetBoundaries) {
+    public DPCompactionRequest(CompactionRequestImpl request, List<byte[]> dPBoundaries) {
       this.request = request;
-      this.targetBoundaries = targetBoundaries;
+      this.dPBoundaries = dPBoundaries;
     }
 
-    public DPCompactionRequest(Collection<HStoreFile> files,
-      List<byte[]> targetBoundaries) {
+    public DPCompactionRequest(Collection<HStoreFile> files, List<byte[]> targetBoundaries) {
       this(new CompactionRequestImpl(files), targetBoundaries);
-    }
-
-    public List<Path> execute(DPCompactor compactor, ThroughputController throughputController)
-      throws IOException {
-      return execute(compactor, throughputController, null);
     }
 
     /**
@@ -187,9 +182,14 @@ public class DPCompactionPolicy extends CompactionPolicy {
      * @return result of compact(...)
      */
     public List<Path> execute(DPCompactor compactor, ThroughputController throughputController,
-      User user) throws IOException {
-      return compactor.compact(this.request, this.targetBoundaries, this.majorRangeFromRow,
-        this.majorRangeToRow, throughputController, user);
+      User user, DPAreaOfTS ats) throws IOException {
+      return compactor.compact(this.request, this.dPBoundaries, this.majorRangeFromRow,
+        this.majorRangeToRow, throughputController, user, ats);
+    }
+
+    public List<Path> execute(DPCompactor compactor, ThroughputController throughputController,
+      DPAreaOfTS ats) throws IOException {
+      return execute(compactor, throughputController, null, ats);
     }
 
     public CompactionRequestImpl getRequest() {

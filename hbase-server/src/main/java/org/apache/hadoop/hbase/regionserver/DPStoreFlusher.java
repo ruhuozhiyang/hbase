@@ -10,10 +10,10 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -21,11 +21,14 @@ import java.util.function.Consumer;
 public class DPStoreFlusher extends StoreFlusher{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreFlusher.class);
   private final Object flushLock = new Object();
-  private final DPInformationProvider dPInformation;
+  private final DPStoreFileManager dPInformation;
+  private final DPAreaOfTS ats;
 
-  public DPStoreFlusher(Configuration conf, HStore store, DPStoreFileManager dPInformation) {
+  public DPStoreFlusher(Configuration conf, HStore store, DPStoreFileManager dPInformation,
+    DPAreaOfTS ats) {
     super(conf, store);
     this.dPInformation = dPInformation;
+    this.ats = ats;
   }
 
   private DPBoundaryMultiFileWriter.WriterFactory createWriterFactory(MemStoreSnapshot snapshot,
@@ -55,11 +58,12 @@ public class DPStoreFlusher extends StoreFlusher{
     boolean success = false;
     DPBoundaryMultiFileWriter mw = null;
     try {
-      mw = req.createWriter(); // Writer according to the policy.
+      mw = req.createWriter(this.ats); // Writer according to the policy.
       DPBoundaryMultiFileWriter.WriterFactory factory =
         createWriterFactory(snapshot, writerCreationTracker);
       StoreScanner storeScanner = (scanner instanceof StoreScanner) ? (StoreScanner) scanner : null;
       mw.init(storeScanner, factory);
+      mw.initWriterForL0();
 
       synchronized (flushLock) {
         performFlush(scanner, mw, throughputController);
@@ -86,11 +90,11 @@ public class DPStoreFlusher extends StoreFlusher{
   }
 
   public DPFlushRequest selectFlush(InternalScanner scanner, CellComparator cellComparator,
-    DPInformationProvider dip) {
+    DPStoreFileManager dip) {
     if (dip.getDPCount() == 0) {
-      return new GenBoundaryAndDPFlushRequest(cellComparator, scanner);
+      return new GenBoundaryAndDPFlushRequest(cellComparator, scanner, dip);
     }
-    return new BoundaryDPFlushRequest(cellComparator, dip.getDPBoundaries());
+    return new BoundaryDPFlushRequest(cellComparator, dip.getDPBoundaries(), dip);
   }
 
   public static abstract class DPFlushRequest {
@@ -100,23 +104,26 @@ public class DPStoreFlusher extends StoreFlusher{
       this.cellComparator = cellComparator;
     }
 
-    public abstract DPBoundaryMultiFileWriter createWriter() throws IOException;
+    public abstract DPBoundaryMultiFileWriter createWriter(DPAreaOfTS ats) throws IOException;
   }
 
   public static class GenBoundaryAndDPFlushRequest extends DPFlushRequest {
     private InternalScanner scanner;
+    private DPStoreFileManager dip;
 
-    public GenBoundaryAndDPFlushRequest(CellComparator cellComparator, InternalScanner scanner) {
+    public GenBoundaryAndDPFlushRequest(CellComparator cellComparator,
+      InternalScanner scanner, DPStoreFileManager dip) {
       super(cellComparator);
       this.scanner = scanner;
+      this.dip = dip;
     }
 
     @Override
-    public DPBoundaryMultiFileWriter createWriter() throws IOException {
-      List<byte[]> dpBoundaries = doCA2GetDPBoundaries();
-      LOG.info("Get dpBoundaries:{} by DP Cluster Analysis.", dpBoundaries.toString());
-      return new DPBoundaryMultiFileWriter(cellComparator, dpBoundaries,
-              null, null);
+    public DPBoundaryMultiFileWriter createWriter(DPAreaOfTS ats) throws IOException {
+      List<byte[]> newDpBoundaries = doCA2GetDPBoundaries();
+      LOG.info("[Gen DPBoundaries] Gen dPBoundaries:{}, size:[{}].", newDpBoundaries.toString(), newDpBoundaries.size());
+//      this.dip.updateStateDPBoundaries(newDpBoundaries);
+      return new DPBoundaryMultiFileWriter(cellComparator, newDpBoundaries, null, null, ats);
     }
 
     private List<byte[]> doCA2GetDPBoundaries() throws IOException {
@@ -131,7 +138,7 @@ public class DPStoreFlusher extends StoreFlusher{
           for (Cell cell : kvs) {
             byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
             if (flagForDebug < 3) {
-              LOG.info("Key String:{}", Bytes.toString(rowArray));
+              LOG.info("[Gen DPBoundaries], Key Example[{}]:[{}].", flagForDebug + 1, Bytes.toString(rowArray));
             }
             rowKeys.add(rowArray);
           }
@@ -142,9 +149,9 @@ public class DPStoreFlusher extends StoreFlusher{
 
       DPClusterAnalysis dpCA = new DPClusterAnalysis();
       dpCA.loadData(rowKeys);
-      dpCA.setKernels();
+      dpCA.initKernels();
       dpCA.kMeans();
-      dpCA.setDpBoundaries();
+      dpCA.prune2GetDPBoundaries();
       return dpCA.getDpBoundaries();
     }
   }
@@ -153,23 +160,65 @@ public class DPStoreFlusher extends StoreFlusher{
    * Dynamic partition flush request wrapper based on boundaries.
    */
   public static class BoundaryDPFlushRequest extends DPFlushRequest {
-    private final List<byte[]> targetBoundaries;
+    private final List<byte[]> currentDPBoundaries;
+    private DPStoreFileManager dip;
 
     /**
      * @param cellComparator used to compare cells.
-     * @param targetBoundaries New files should be written with these boundaries.
+     * @param dPBoundaries New files should be written with these boundaries.
      */
-    public BoundaryDPFlushRequest(CellComparator cellComparator, List<byte[]> targetBoundaries) {
+    public BoundaryDPFlushRequest(CellComparator cellComparator, List<byte[]> dPBoundaries, DPStoreFileManager dip) {
       super(cellComparator);
-      this.targetBoundaries = targetBoundaries;
+      this.currentDPBoundaries = dPBoundaries;
+      this.dip = dip;
     }
 
     @Override
-    public DPBoundaryMultiFileWriter createWriter() throws IOException {
-      DPClusterAnalysis.boundariesExpansion(targetBoundaries);
-      LOG.info("Expansion dpBoundaries:{}.", targetBoundaries);
-      return new DPBoundaryMultiFileWriter(cellComparator, targetBoundaries,
-        null, null);
+    public DPBoundaryMultiFileWriter createWriter(DPAreaOfTS ats) throws IOException {
+//      DPClusterAnalysis.boundariesExpansion(targetBoundaries);
+//      LOG.info("Expansion dpBoundaries:{}", deBug(targetBoundaries));
+      List<byte[]> newDpBoundaries = doCA2UpdateDPBoundaries(ats, this.currentDPBoundaries);
+//      this.dip.updateStateDPBoundaries(newDpBoundaries);
+      LOG.info("[Update DPBoundaries], Update DPBoundaries:{}, size:[{}].", serializeDPBoundaries2String(newDpBoundaries), newDpBoundaries.size());
+      return new DPBoundaryMultiFileWriter(cellComparator, newDpBoundaries, null, null, ats);
+    }
+
+    private List<byte[]> doCA2UpdateDPBoundaries(DPAreaOfTS ats, List<byte[]> oldBoundaries) {
+      List<Cell> kvs = ats.getAllCellsAndReset();
+      List<byte[]> rowKeys = new ArrayList<>();
+
+      int flagForDebug = 0;
+      for (Cell cell : kvs) {
+        byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+        if (flagForDebug < 3) {
+          LOG.info("[Update DPBoundaries], Key Example[{}]:[{}].", flagForDebug + 1, Bytes.toString(rowArray));
+        }
+        rowKeys.add(rowArray);
+        ++flagForDebug;
+      }
+
+      DPClusterAnalysis dpCA = new DPClusterAnalysis();
+      dpCA.loadData(rowKeys);
+      dpCA.initKernels();
+      dpCA.kMeans();
+      dpCA.setOldDPBoundaries(oldBoundaries);
+      dpCA.prune2GetDPBoundaries();
+      return dpCA.getDpBoundaries();
+    }
+
+    public static String serializeDPBoundaries2String(List<byte[]> dPBoundaries) {
+      Iterator<byte[]> it = dPBoundaries.iterator();
+      if (! it.hasNext())
+        return "[]";
+      StringBuilder sb = new StringBuilder();
+      sb.append('[');
+      for (;;) {
+        byte[] e = it.next();
+        sb.append((e instanceof byte[]) ? new String(e) : e);
+        if (! it.hasNext())
+          return sb.append(']').toString();
+        sb.append(',');
+      }
     }
   }
 }

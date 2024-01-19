@@ -48,6 +48,10 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
    * complicated error handling.
    */
   private static class State {
+    public void setdPBoundaries(byte[][] dPBoundaries) {
+      this.dPBoundaries = dPBoundaries;
+    }
+
     public byte[][] dPBoundaries = new byte[0][];
     /**
      * Files by DP. Each element of the list corresponds to dPBoundaries elements
@@ -521,6 +525,10 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
           removeFrom = 0;
         } else {
           removeFrom = findDPartitionIndexByEndRow(newFirstStartRow);
+          ArrayList<byte[]> boundary = new ArrayList<>(state.dPBoundaries.length);
+          Collections.addAll(boundary, state.dPBoundaries);
+          LOG.info("Current Boundaries:[{}].", DPStoreFlusher.BoundaryDPFlushRequest.serializeDPBoundaries2String(boundary));
+          LOG.info("NewFirstStartRow:[{}], removeFrom:[{}].", new String(newFirstStartRow), removeFrom);
           if (removeFrom < 0) {
             throw new IllegalStateException("Compaction is trying to add a bad range.");
           }
@@ -661,6 +669,15 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     ArrayList<byte[]> result = new ArrayList<>(this.state.dPBoundaries.length);
     Collections.addAll(result, this.state.dPBoundaries);
     return result;
+  }
+
+  public void updateStateDPBoundaries(List<byte[]> dpBoundaries) {
+    byte[][] newDpBoundaries = new byte[dpBoundaries.size()][];
+    for (int i = 0; i < dpBoundaries.size(); i++) {
+      newDpBoundaries[i] = dpBoundaries.get(i);
+    }
+    DPStoreFileManager.State oldState = DPStoreFileManager.this.state;
+    oldState.setdPBoundaries(newDpBoundaries);
   }
 
   @Override

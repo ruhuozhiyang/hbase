@@ -149,28 +149,30 @@ public class DPClusterAnalysis {
         for (int i = startInsertPoint; i < endInsertPoint; i++) {
           byte[] resL;
           byte[] resR;
-          if (startInsertPoint == endInsertPoint - 1) {
-            final byte[] preEnd = this.oldDPBoundaries.get(endInsertPoint - 1);
-            byte[] ll = new byte[preEnd.length];
-            System.arraycopy(preEnd, 0, ll, 0, l.length);
-            ll[ll.length - 1] = (byte) ((ll[ll.length - 1] & 0xFF) + 1);
-            resL = ll;
-            resR = r;
-          } else if (startInsertPoint % 2 == 1) {
-            final byte[] lef = this.oldDPBoundaries.get(startInsertPoint);
-            final byte[] rig = this.oldDPBoundaries.get(startInsertPoint + 1);
-            byte[] llef = new byte[lef.length];
-            byte[] rrig = new byte[rig.length];
-            System.arraycopy(lef, 0, llef, 0, lef.length);
-            System.arraycopy(rig, 0, rrig, 0, rig.length);
-            llef[llef.length - 1] = (byte) ((llef[llef.length - 1] & 0xFF) + 1);
-            rrig[rrig.length - 1] = (byte) ((rrig[rrig.length - 1] & 0xFF) - 1);
-            resL = llef;
-            resR = rrig;
+          if (startInsertPoint % 2 == 1) {
+            if (startInsertPoint == endInsertPoint - 1) {
+              final byte[] preEnd = this.oldDPBoundaries.get(endInsertPoint - 1);
+              byte[] ll = new byte[preEnd.length];
+              System.arraycopy(preEnd, 0, ll, 0, l.length);
+              ll[ll.length - 1] = (byte) ((ll[ll.length - 1] & 0xFF) + 1);
+              resL = ll;
+              resR = r;
+            } else {
+              final byte[] lef = this.oldDPBoundaries.get(startInsertPoint);
+              final byte[] rig = this.oldDPBoundaries.get(startInsertPoint + 1);
+              byte[] llef = new byte[lef.length];
+              byte[] rrig = new byte[rig.length];
+              System.arraycopy(lef, 0, llef, 0, lef.length);
+              System.arraycopy(rig, 0, rrig, 0, rig.length);
+              llef[llef.length - 1] = (byte) ((llef[llef.length - 1] & 0xFF) + 1);
+              rrig[rrig.length - 1] = (byte) ((rrig[rrig.length - 1] & 0xFF) - 1);
+              resL = llef;
+              resR = rrig;
+            }
+            int insertIndex2 = i > startInsertPoint ? startInsertPoint + 3 : startInsertPoint + 1;
+            this.newDPBoundaries.add(insertIndex2, resL);
+            this.newDPBoundaries.add(insertIndex2, resR);
           }
-          int insertIndex2 = i > startInsertPoint ? startInsertPoint + 3 : startInsertPoint + 1;
-          this.newDPBoundaries.add(insertIndex2, resL);
-          this.newDPBoundaries.add(insertIndex2, resR);
         }
       }
       else if (startInsertPoint % 2 == 1 && endInsertPoint % 2 == 1) {

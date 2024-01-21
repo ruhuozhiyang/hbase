@@ -2,7 +2,6 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.regionserver.*;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.User;
@@ -11,8 +10,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -48,37 +45,6 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
           return writer;
         }
       }, throughputController, user);
-  }
-
-  private List<byte[]> doCA2GetDPBoundaries(List<byte[]> oldBoundaries, InternalScanner scanner) throws IOException {
-    List<Cell> kvs = new ArrayList<>();
-    List<byte[]> rowKeys = new ArrayList<>();
-
-    boolean hasMore;
-    int flagForDebug = 0;
-    do {
-      hasMore = scanner.next(kvs);
-      if (!kvs.isEmpty()) {
-        for (Cell cell : kvs) {
-          byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(),
-            (cell.getRowOffset() + cell.getRowLength() - 1));
-          if (flagForDebug < 3) {
-            LOG.info("In Compaction, Key String:{}", Bytes.toString(rowArray));
-          }
-          rowKeys.add(rowArray);
-        }
-        kvs.clear();
-      }
-      ++flagForDebug;
-    } while (hasMore);
-
-    DPClusterAnalysis dpCA = new DPClusterAnalysis();
-    dpCA.loadData(rowKeys);
-    dpCA.initKernels();
-    dpCA.kMeans();
-    dpCA.setOldDPBoundaries(oldBoundaries);
-    dpCA.prune2GetDPBoundaries();
-    return dpCA.getDpBoundaries();
   }
 
   @Override protected List<Path> commitWriter(DPBoundaryMultiFileWriter writer, FileDetails fd,

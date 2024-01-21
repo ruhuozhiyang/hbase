@@ -61,30 +61,28 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
 
   @Override
   public void append(Cell cell) throws IOException {
-    if (!checkWhetherInDPartitions(this.boundaries, cell)) {
+    if (checkWhetherInDPartitions(this.boundaries, cell)) {
+      prepareWriterFor(cell);
+      this.currentWriter.append(cell);
+      this.lastCell = cell;
+      ++this.cellsInCurrentWriter;
+    } else {
       this.ats.add(cell);
-      return;
     }
-    prepareWriterFor(cell);
-    this.currentWriter.append(cell);
-    this.lastCell = cell;
-    ++this.cellsInCurrentWriter;
   }
 
   private boolean checkWhetherInDPartitions(List<byte[]> boundaries, Cell cell) {
     byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
     int i = Collections.binarySearch(boundaries, rowArray, Bytes.BYTES_COMPARATOR);
-    if (i >= 0) {
-      return i % 2 == 0 ? true : false;
-    } else {
-      return (Math.abs(i + 1) % 2) == 0 ? false : true;
-    }
+    return i >= 0 ? true : (Math.abs(i + 1) % 2) == 1 ? true : false;
   }
 
   private void prepareWriterFor(Cell cell) throws IOException {
     if (currentWriter != null && !isCellAfterCurrentWriter(cell)) {
       return;
     }
+    byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+    LOG.info("Before Stopping Using Current Writer, Current Key:[{}].", new String(rowArray));
     stopUsingCurrentWriter();
     while (isCellAfterCurrentWriter(cell)) {
       checkCanCreateWriter();
@@ -104,7 +102,7 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   private void stopUsingCurrentWriter() {
     if (this.currentWriter != null) {
       LOG.info("Stopping to use a writer after [" + Bytes.toString(this.currentWriterEndKey)
-        + "] row; wrote out " + this.cellsInCurrentWriter + " kvs");
+        + "] row; Have written out " + this.cellsInCurrentWriter + " kvs;");
       cellsInCurrentWriter = 0;
     }
     currentWriter = null;

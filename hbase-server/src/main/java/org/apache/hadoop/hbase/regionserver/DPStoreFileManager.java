@@ -510,100 +510,22 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     }
 
     private void processNewDPartitions(TreeMap<byte[], HStoreFile> newDPartitions) {
-      // Validate that the removed and added aggregate ranges still make for a full key space.
-      boolean hasDPartitions = !this.dPFiles.isEmpty();
-      int removeFrom = 0;
-      byte[] newFirstStartRow = startOf(newDPartitions.firstEntry().getValue());
-      byte[] newLastEndRow = newDPartitions.lastKey();
-
-      boolean canAddNewDPartitions = true;
-      Collection<HStoreFile> filesForL0 = null;
-      if (hasDPartitions) {
-        // Determine which dPartitions will need to be removed because they conflict with new dPartitions.
-        // The new boundaries should match old dPartitions boundaries, so we should get exact matches.
-        if (isOpen(newFirstStartRow)) {
-          removeFrom = 0;
-        } else {
-          removeFrom = findDPartitionIndexByEndRow(newFirstStartRow);
-          ArrayList<byte[]> boundary = new ArrayList<>(state.dPBoundaries.length);
-          Collections.addAll(boundary, state.dPBoundaries);
-          LOG.info("Current Boundaries:[{}].", DPStoreFlusher.BoundaryDPFlushRequest.serializeDPBoundaries2String(boundary));
-          LOG.info("NewFirstStartRow:[{}], removeFrom:[{}].", new String(newFirstStartRow), removeFrom);
-          if (removeFrom < 0) {
-            throw new IllegalStateException("Compaction is trying to add a bad range.");
-          }
-        }
-        int removeTo = findDPartitionIndexByEndRow(newLastEndRow);
-        if (removeTo < 0) {
-          throw new IllegalStateException("Compaction is trying to add a bad range.");
-        }
-        // See if there are files in the dPartitions we are trying to replace.
-        ArrayList<HStoreFile> conflictingFiles = new ArrayList<>();
-        for (int removeIndex = removeTo; removeIndex >= removeFrom; --removeIndex) {
-          conflictingFiles.addAll(this.dPFiles.get(removeIndex));
-        }
-        if (!conflictingFiles.isEmpty()) {
-          // This can be caused by two things - concurrent flush into dPartitions, or a bug.
-          // Unfortunately, we cannot tell them apart without looking at timing or something
-          // like that. We will assume we are dealing with a flush and dump it into L0.
-          if (isFlush) {
-            long newSize = getTotalFileSize(newDPartitions.values());
-            LOG.warn("DPartitions were created by a flush, but results of size " + newSize
-              + " cannot be added because the DPartitions have changed");
-            canAddNewDPartitions = false;
-            filesForL0 = newDPartitions.values();
-          } else {
-            long oldSize = getTotalFileSize(conflictingFiles);
-            LOG.info(conflictingFiles.size() + " conflicting files (likely created by a flush) "
-              + " of size " + oldSize + " are moved to L0 due to concurrent DPartitions change");
-            filesForL0 = conflictingFiles;
-          }
-          if (filesForL0 != null) {
-            for (HStoreFile sf : filesForL0) {
-              insertFileIntoDPartition(getLevel0Copy(), sf);
-            }
-            l0Results.addAll(filesForL0);
-          }
-        }
-
-        if (canAddNewDPartitions) {
-          int originalCount = this.dPFiles.size();
-          for (int removeIndex = removeTo; removeIndex >= removeFrom; --removeIndex) {
-            if (removeIndex != originalCount - 1) {
-              this.dPBoundaries.remove((2 * removeIndex));
-              this.dPBoundaries.remove((2 * removeIndex) + 1);
-            }
-            this.dPFiles.remove(removeIndex);
-          }
-        }
-      }
-
-      if (!canAddNewDPartitions) {
-        return; // Files were already put into L0.
-      }
-
-      // Now, insert new DPartitions. The total ranges match, so we can insert where we removed.
-      byte[] previousEndRow = null;
-      int insertAt = removeFrom;
       for (Map.Entry<byte[], HStoreFile> newDPartition : newDPartitions.entrySet()) {
+        boolean hasDPartitions = !this.dPFiles.isEmpty();
         byte[] startRow = startOf(newDPartition.getValue());
-        if (previousEndRow != null) {
-          assert !isOpen(previousEndRow);
-          if (Bytes.compareTo(startRow, previousEndRow) < 0) {
-            throw new IllegalStateException("The new dPartitions produced by "
-              + (isFlush ? "flush" : "compaction") + " are not legal.");
-          }
-        }
-        // Add the new DPartitions.
         ArrayList<HStoreFile> tmp = new ArrayList<>();
         tmp.add(newDPartition.getValue());
-        dPFiles.add(insertAt, tmp);
-        previousEndRow = newDPartition.getKey();
-        if (!isOpen(previousEndRow)) {
-          dPBoundaries.add((2 * insertAt), startRow);
-          dPBoundaries.add((2 * insertAt) + 1, previousEndRow);
+        if (hasDPartitions) {
+          int insert2BoundariesIndex = Math.abs(Collections.binarySearch(this.dPBoundaries, startRow,
+                  Bytes.BYTES_COMPARATOR) + 1);
+          this.dPBoundaries.add(insert2BoundariesIndex, newDPartition.getKey());
+          this.dPBoundaries.add(insert2BoundariesIndex, startRow);
+          this.dPFiles.add(insert2BoundariesIndex / 2, tmp);
+        } else {
+          this.dPBoundaries.add(0, newDPartition.getKey());
+          this.dPBoundaries.add(0, startRow);
+          this.dPFiles.add(0, tmp);
         }
-        ++insertAt;
       }
     }
   }

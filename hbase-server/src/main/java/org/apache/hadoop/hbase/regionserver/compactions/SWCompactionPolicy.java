@@ -6,6 +6,7 @@ import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
@@ -15,7 +16,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
-import java.util.stream.LongStream;
 
 @InterfaceAudience.Private
 public class SWCompactionPolicy extends RatioBasedCompactionPolicy {
@@ -79,13 +79,13 @@ public class SWCompactionPolicy extends RatioBasedCompactionPolicy {
       }
     }
     if (bestSelection.isEmpty() && mightBeStuck) {
-      LOG.info("Exploring compaction algorithm has selected " + smallest.size() + " files of size "
+      LOG.info("Sliding-Window compaction algorithm has selected " + smallest.size() + " files of size "
         + smallestSize + " because the store might be stuck");
       sizeOfSSTInCompactionRecord("small", smallest);
       return new ArrayList<>(smallest);
     }
     LOG.info(
-      "Exploring compaction algorithm has selected {}  files of size {} starting at candidate #{} ",
+      "Sliding-Window  compaction algorithm has selected {}  files of size {} starting at candidate #{} ",
       bestSelection.size(), bestSize, bestStart);
     sizeOfSSTInCompactionRecord("best", bestSelection);
     return new ArrayList<>(bestSelection);

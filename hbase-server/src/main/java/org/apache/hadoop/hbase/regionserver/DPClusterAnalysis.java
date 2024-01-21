@@ -4,11 +4,8 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Random;
+
+import java.util.*;
 import java.util.stream.Collectors;
 
 @InterfaceAudience.Private
@@ -103,8 +100,10 @@ public class DPClusterAnalysis {
   }
 
   public void prune2GetDPBoundaries() {
-    if (this.initKernel.size() == 1) {
-      throw new RuntimeException("CA Kernels Num is [1].");
+    if (this.initKernel.size() < 2) {
+      LOG.warn("CA Kernels Num is smaller than 2.");
+      this.newDPBoundaries = new ArrayList<>(this.oldDPBoundaries);
+      return;
     }
     final byte[] kernel1 = this.initKernel.get(0);
     final byte[] kernel2 = this.initKernel.get(1);
@@ -133,53 +132,64 @@ public class DPClusterAnalysis {
       LOG.info("[Update DPBoundaries], StartIndex of [{}] is [{}].", new String(l), startIndex);
       LOG.info("[Update DPBoundaries], EndIndex of [{}] is [{}].", new String(r), endIndex);
       this.newDPBoundaries = new ArrayList<>(this.oldDPBoundaries);
-      if (startIndex >= 0 && endIndex > 0) {
+      if (startIndex >= 0 && endIndex >= 0) {
         return;
       }
       int startInsertPoint = Math.abs(startIndex + 1);
       int endInsertPoint = Math.abs(endIndex + 1);
-      if (startInsertPoint % 2 == 0 && endInsertPoint % 2 == 0) {
-        if (startInsertPoint != endInsertPoint) return;
-        if (startInsertPoint == endInsertPoint) {
+      if ((startInsertPoint == endInsertPoint) && (startInsertPoint % 2 == 0)) {
+        if (endIndex >= 0) {
+          byte[] rr = new byte[r.length];
+          System.arraycopy(r, 0, rr, 0, r.length);
+          rr[rr.length - 1] = (byte) ((rr[rr.length - 1] & 0xFF) - 1);
+          this.newDPBoundaries.add(endInsertPoint, rr);
+        } else {
           this.newDPBoundaries.add(endInsertPoint, r);
+        }
+        if (startIndex >= 0) {
+          byte[] ll = new byte[l.length];
+          System.arraycopy(l, 0, ll, 0, l.length);
+          ll[ll.length - 1] = (byte) ((ll[ll.length - 1] & 0xFF) + 1);
+          this.newDPBoundaries.add(startInsertPoint, ll);
+        } else {
           this.newDPBoundaries.add(startInsertPoint, l);
         }
-      }
-      else if (startInsertPoint % 2 == 1 && endInsertPoint % 2 == 0) {
-        for (int i = startInsertPoint; i < endInsertPoint; i++) {
-          byte[] resL;
-          byte[] resR;
-          if (startInsertPoint % 2 == 1) {
-            if (startInsertPoint == endInsertPoint - 1) {
-              final byte[] preEnd = this.oldDPBoundaries.get(endInsertPoint - 1);
-              byte[] ll = new byte[preEnd.length];
-              System.arraycopy(preEnd, 0, ll, 0, l.length);
-              ll[ll.length - 1] = (byte) ((ll[ll.length - 1] & 0xFF) + 1);
-              resL = ll;
+      } else {
+        int signal = 0;
+        for (int i = startInsertPoint; i < endInsertPoint; ++i) {
+          if (startInsertPoint % 2 == 0) {
+            byte[] rig = this.oldDPBoundaries.get(startInsertPoint);
+            byte[] rrig = new byte[rig.length];
+            System.arraycopy(rig, 0, rrig, 0, rig.length);
+            rrig[rrig.length - 1] = (byte) ((rrig[rrig.length - 1] & 0xFF) - 1);
+            if (Bytes.compareTo(l, rrig) < 0) {
+              this.newDPBoundaries.add(startInsertPoint, rrig);
+              this.newDPBoundaries.add(startInsertPoint, l);
+              signal = 1;
+            }
+          }
+          if (i % 2 == 1) {
+            byte[] resL, resR;
+            byte[] lef = this.oldDPBoundaries.get(i);
+            resL = new byte[lef.length];
+            System.arraycopy(lef, 0, resL, 0, lef.length);
+            resL[resL.length - 1] = (byte) ((resL[resL.length - 1] & 0xFF) + 1);
+            if ((i == endInsertPoint - 1)) {
               resR = r;
             } else {
-              final byte[] lef = this.oldDPBoundaries.get(startInsertPoint);
-              final byte[] rig = this.oldDPBoundaries.get(startInsertPoint + 1);
-              byte[] llef = new byte[lef.length];
-              byte[] rrig = new byte[rig.length];
-              System.arraycopy(lef, 0, llef, 0, lef.length);
-              System.arraycopy(rig, 0, rrig, 0, rig.length);
-              llef[llef.length - 1] = (byte) ((llef[llef.length - 1] & 0xFF) + 1);
-              rrig[rrig.length - 1] = (byte) ((rrig[rrig.length - 1] & 0xFF) - 1);
-              resL = llef;
-              resR = rrig;
+              byte[] rig = this.oldDPBoundaries.get(i + 1);
+              resR = new byte[rig.length];
+              System.arraycopy(rig, 0, resR, 0, rig.length);
+              resR[resR.length - 1] = (byte) ((resR[resR.length - 1] & 0xFF) - 1);
             }
-            int insertIndex2 = i > startInsertPoint ? startInsertPoint + 3 : startInsertPoint + 1;
-            this.newDPBoundaries.add(insertIndex2, resL);
-            this.newDPBoundaries.add(insertIndex2, resR);
+            if (Bytes.compareTo(resL, resR) < 0) {
+              int insertIndex = signal == 1 ? i + 3 : i + 1;
+              this.newDPBoundaries.add(insertIndex, resR);
+              this.newDPBoundaries.add(insertIndex, resL);
+              signal = 1;
+            }
           }
         }
-      }
-      else if (startInsertPoint % 2 == 1 && endInsertPoint % 2 == 1) {
-
-      }
-      else if (startInsertPoint % 2 == 0 && endInsertPoint % 2 == 1) {
-
       }
     } else {
       this.newDPBoundaries = new DPArrayList<>();

@@ -4,12 +4,14 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -68,6 +70,12 @@ public class DPStoreFlusher extends StoreFlusher{
       synchronized (flushLock) {
         LOG.info("====Start Flushing KVs, Has More:[{}].", scanner.next(new ArrayList<>()));
         performFlush(scanner, mw, throughputController);
+        if (req instanceof UpdateBoundaryAndDPFlushRequest) {
+          List<Cell> cellsInATS = ((UpdateBoundaryAndDPFlushRequest) req).getCellsInATS();
+          for (int i = 0; i < cellsInATS.size(); i++) {
+            mw.append(cellsInATS.get(i));
+          }
+        }
         LOG.info("====Complete Flushing KVs.");
         result = mw.commitWriters(cacheFlushSeqNum, false);
         success = true;
@@ -96,7 +104,7 @@ public class DPStoreFlusher extends StoreFlusher{
     DPStoreFileManager dPFileInfo) {
     return dPFileInfo.getDPBoundaries().size() == 0
             ? new GenBoundaryAndDPFlushRequest(cellComparator, scannerForCA)
-            : new BoundaryDPFlushRequest(cellComparator, dPFileInfo);
+            : new UpdateBoundaryAndDPFlushRequest(cellComparator, dPFileInfo);
   }
 
   public static abstract class DPFlushRequest {
@@ -160,16 +168,21 @@ public class DPStoreFlusher extends StoreFlusher{
   /**
    * Dynamic-partition flush request wrapper based on boundaries.
    */
-  public static class BoundaryDPFlushRequest extends DPFlushRequest {
+  public static class UpdateBoundaryAndDPFlushRequest extends DPFlushRequest {
     private DPStoreFileManager dPFileInfo;
+    private List<Cell> cellsInATS;
 
     /**
      * @param cellComparator used to compare cells.
      * @param dPFileInfo New files should be written with these boundaries in dPFileInfo.
      */
-    public BoundaryDPFlushRequest(CellComparator cellComparator, DPStoreFileManager dPFileInfo) {
+    public UpdateBoundaryAndDPFlushRequest(CellComparator cellComparator, DPStoreFileManager dPFileInfo) {
       super(cellComparator);
       this.dPFileInfo = dPFileInfo;
+    }
+
+    public List<Cell> getCellsInATS() {
+      return this.cellsInATS == null ? new ArrayList<>() : this.cellsInATS;
     }
 
     @Override
@@ -185,17 +198,22 @@ public class DPStoreFlusher extends StoreFlusher{
     }
 
     private List<byte[]> doCA2UpdateDPBoundaries(DPAreaOfTS ats, List<byte[]> oldBoundaries) {
-      List<Cell> kvs = ats.getAllCellsAndReset();
+      this.cellsInATS = ats.getAllCellsAndReset();
       List<byte[]> rowKeys = new ArrayList<>();
 
       int countForDebug = 0;
-      for (Cell cell : kvs) {
-        byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
-        if (countForDebug < 3) {
-          LOG.info("[Update DPBoundaries], Key Example[{}]:[{}].", countForDebug + 1, Bytes.toString(rowArray));
+      for (Cell cell : this.cellsInATS) {
+        LOG.info("cell class:[{}]", cell.getClass());
+        if (cell instanceof KeyValue) {
+          LOG.info("Key:[{}]", ((NoTagByteBufferChunkKeyValue) cell));
+          byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+          LOG.info("getRowOffset:[{}], getRowLength:[{}].", cell.getRowOffset(), cell.getRowLength());
+          if (countForDebug < 3) {
+            LOG.info("[Update DPBoundaries], Key Example[{}]:[{}].", countForDebug + 1, Bytes.toString(rowArray));
+          }
+          rowKeys.add(rowArray);
+          ++countForDebug;
         }
-        rowKeys.add(rowArray);
-        ++countForDebug;
       }
 
       DPClusterAnalysis dpCA = new DPClusterAnalysis();

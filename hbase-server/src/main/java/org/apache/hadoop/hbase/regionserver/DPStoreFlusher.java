@@ -4,19 +4,17 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NavigableMap;
 import java.util.function.Consumer;
 
 @InterfaceAudience.Private
@@ -70,12 +68,13 @@ public class DPStoreFlusher extends StoreFlusher{
       synchronized (flushLock) {
         LOG.info("====Start Flushing KVs, Has More:[{}].", scanner.next(new ArrayList<>()));
         performFlush(scanner, mw, throughputController);
-        if (req instanceof UpdateBoundaryAndDPFlushRequest) {
-          List<Cell> cellsInATS = ((UpdateBoundaryAndDPFlushRequest) req).getCellsInATS();
-          for (int i = 0; i < cellsInATS.size(); i++) {
-            mw.append(cellsInATS.get(i));
-          }
-        }
+//        if (req instanceof UpdateBoundaryAndDPFlushRequest) {
+//          NavigableMap<Cell, Cell> sortedCellsInATS = ((UpdateBoundaryAndDPFlushRequest) req).getSortedCellsInATS();
+//          final Iterator<Cell> sortedCells = sortedCellsInATS.values().iterator();
+//          while (sortedCells.hasNext()) {
+//            mw.append(sortedCells.next());
+//          }
+//        }
         LOG.info("====Complete Flushing KVs.");
         result = mw.commitWriters(cacheFlushSeqNum, false);
         success = true;
@@ -145,7 +144,8 @@ public class DPStoreFlusher extends StoreFlusher{
         hasMore = scannerForCA.next(kvs);
         if (!kvs.isEmpty()) {
           for (Cell cell : kvs) {
-            byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+            byte[] rowArray = new byte[cell.getRowLength()];
+            System.arraycopy(cell.getRowArray(), cell.getRowOffset(), rowArray, 0, cell.getRowLength());
             if (flagForDebug < 3) {
               LOG.info("[Gen DPBoundaries], Key Example[{}]:[{}].", flagForDebug + 1, Bytes.toString(rowArray));
             }
@@ -170,7 +170,6 @@ public class DPStoreFlusher extends StoreFlusher{
    */
   public static class UpdateBoundaryAndDPFlushRequest extends DPFlushRequest {
     private DPStoreFileManager dPFileInfo;
-    private List<Cell> cellsInATS;
 
     /**
      * @param cellComparator used to compare cells.
@@ -179,10 +178,6 @@ public class DPStoreFlusher extends StoreFlusher{
     public UpdateBoundaryAndDPFlushRequest(CellComparator cellComparator, DPStoreFileManager dPFileInfo) {
       super(cellComparator);
       this.dPFileInfo = dPFileInfo;
-    }
-
-    public List<Cell> getCellsInATS() {
-      return this.cellsInATS == null ? new ArrayList<>() : this.cellsInATS;
     }
 
     @Override
@@ -198,16 +193,12 @@ public class DPStoreFlusher extends StoreFlusher{
     }
 
     private List<byte[]> doCA2UpdateDPBoundaries(DPAreaOfTS ats, List<byte[]> oldBoundaries) {
-      this.cellsInATS = ats.getAllCellsAndReset();
       List<byte[]> rowKeys = new ArrayList<>();
-
       int countForDebug = 0;
-      for (Cell cell : this.cellsInATS) {
-        LOG.info("cell class:[{}]", cell.getClass());
-        if (cell instanceof KeyValue) {
-          LOG.info("Key:[{}]", ((NoTagByteBufferChunkKeyValue) cell));
-          byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
-          LOG.info("getRowOffset:[{}], getRowLength:[{}].", cell.getRowOffset(), cell.getRowLength());
+      for (Cell cell : ats.getAllCellsAndSnapShotAndReset()) {
+        if (cell.getRowLength() > 0 && cell.getRowLength() < 24) {
+          byte[] rowArray = new byte[cell.getRowLength()];
+          System.arraycopy(cell.getRowArray(), cell.getRowOffset(), rowArray, 0, cell.getRowLength());
           if (countForDebug < 3) {
             LOG.info("[Update DPBoundaries], Key Example[{}]:[{}].", countForDebug + 1, Bytes.toString(rowArray));
           }

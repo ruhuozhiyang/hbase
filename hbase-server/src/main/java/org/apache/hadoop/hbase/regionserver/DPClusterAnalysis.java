@@ -92,6 +92,9 @@ public class DPClusterAnalysis {
         stable = true;
       }
       if (stable) {
+        if (initKernel.size() == 2) {
+          LOG.info("After K-Means, Get Kernels:[{}, {}]", new String(initKernel.get(0)), new String(initKernel.get(1)));
+        }
         break;
       } else {
         this.initKernel = newKernels;
@@ -381,6 +384,10 @@ public class DPClusterAnalysis {
     dpCA.kMeans();
     dpCA.prune2GetDPBoundaries();
     serializeKernelOrBoundary2Log(dpCA.getDpBoundaries(), "CA Boundary:");
+
+//    ArrayList<Integer> test = new ArrayList<>(2);
+//    test.add(1);
+//    System.out.println(test.get(0) + "|" + test.get(1)); // Exception
 
 //    ArrayList<Integer> test = new ArrayList<>();
 //    test.add(1);

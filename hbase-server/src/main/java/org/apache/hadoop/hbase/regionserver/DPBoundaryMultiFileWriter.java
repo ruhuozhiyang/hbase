@@ -72,7 +72,8 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   }
 
   private boolean checkWhetherInDPartitions(List<byte[]> boundaries, Cell cell) {
-    byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
+    byte[] rowArray = new byte[cell.getRowLength()];
+    System.arraycopy(cell.getRowArray(), cell.getRowOffset(), rowArray, 0, cell.getRowLength());
     int i = Collections.binarySearch(boundaries, rowArray, Bytes.BYTES_COMPARATOR);
     return i >= 0 ? true : (Math.abs(i + 1) % 2) == 1 ? true : false;
   }
@@ -81,8 +82,8 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
     if (currentWriter != null && !isCellAfterCurrentWriter(cell)) {
       return;
     }
-    byte[] rowArray = Arrays.copyOfRange(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength());
-    LOG.info("Before Stopping Using Current Writer, Current Key:[{}].", new String(rowArray));
+    LOG.info("Before Stopping Using Current Writer, Current Key:[{}].",
+      Bytes.toString(cell.getRowArray(), cell.getRowOffset(), cell.getRowLength()));
     stopUsingCurrentWriter();
     while (isCellAfterCurrentWriter(cell)) {
       checkCanCreateWriter();

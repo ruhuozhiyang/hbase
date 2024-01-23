@@ -23,21 +23,21 @@ import java.util.List;
 @InterfaceAudience.Private
 public class DPCompactionPolicy extends CompactionPolicy {
   private final static Logger LOG = LoggerFactory.getLogger(DPCompactionPolicy.class);
-  private SWCompactionPolicy dPPolicy;
-  private DPStoreConfig dpStoreConfig;
+  private final ExploringCompactionPolicy compactionPolicyInDP;
+  private final DPStoreConfig dpStoreConfig;
 
   public DPCompactionPolicy(Configuration conf, StoreConfigInformation storeConfigInfo,
     DPStoreConfig dpStoreConfig) {
     super(conf, storeConfigInfo);
     this.dpStoreConfig = dpStoreConfig;
-    this.dPPolicy = new SWCompactionPolicy(conf, storeConfigInfo);
+    this.compactionPolicyInDP = new ExploringCompactionPolicy(conf, storeConfigInfo);
   }
 
   public List<HStoreFile> preSelectFilesForCoprocessor(DPInformationProvider di,
     List<HStoreFile> filesCompacting) {
-    final ArrayList<HStoreFile> storefiles = new ArrayList<>(di.getStorefiles());
-    storefiles.removeAll(filesCompacting);
-    return storefiles;
+    final ArrayList<HStoreFile> storeFiles = new ArrayList<>(di.getStorefiles());
+    storeFiles.removeAll(filesCompacting);
+    return storeFiles;
   }
 
   public DPCompactionRequest createEmptyRequest(DPInformationProvider di,
@@ -66,12 +66,11 @@ public class DPCompactionPolicy extends CompactionPolicy {
   }
 
   public DPCompactionRequest selectCompaction(DPInformationProvider di,
-    List<HStoreFile> filesCompacting, boolean isOffpeak) throws IOException {
+    List<HStoreFile> filesCompacting, boolean isOffPeak) throws IOException {
     if (!filesCompacting.isEmpty()) {
       LOG.info("Not selecting compaction: " + filesCompacting.size() + " files compacting");
       return null;
     }
-
     Collection<HStoreFile> allFiles = di.getStorefiles();
     if (StoreUtils.hasReferences(allFiles)) {
       LOG.debug("There are references in the store; compacting all files");
@@ -80,29 +79,27 @@ public class DPCompactionPolicy extends CompactionPolicy {
       request.getRequest().setAfterSplit(true);
       return request;
     }
-
     List<HStoreFile> l0Files = di.getLevel0Files();
     boolean shouldCompactL0 = this.dpStoreConfig.getLevel0MinFiles() <= l0Files.size();
     if (shouldCompactL0) {
       LOG.debug("Selecting L0 compaction with " + l0Files.size() + " files");
-      DPCompactionRequest result = selectSingleDPCompaction(di, true, isOffpeak);
+      DPCompactionRequest result = selectSingleDPCompaction(di, true, isOffPeak);
       if (result != null) {
         return result;
       }
     }
-
-    return selectSingleDPCompaction(di, false, isOffpeak);
+    return selectSingleDPCompaction(di, false, isOffPeak);
   }
 
   protected DPCompactionRequest selectSingleDPCompaction(DPInformationProvider di, boolean includeL0,
-    boolean isOffpeak) {
+    boolean isOffPeak) {
     ArrayList<ImmutableList<HStoreFile>> dPartitions = di.getDPs();
     int bqIndex = -1;
     List<HStoreFile> bqSelection = null;
     int dPCount = dPartitions.size();
     long bqTotalSize = -1;
     for (int i = 0; i < dPCount; ++i) {
-      List<HStoreFile> selection = selectSimpleCompaction(dPartitions.get(i), isOffpeak, false);
+      List<HStoreFile> selection = selectSimpleCompaction(dPartitions.get(i), isOffPeak, false);
       if (selection.isEmpty()) continue;
       long size = 0;
       for (HStoreFile sf : selection) {
@@ -121,30 +118,29 @@ public class DPCompactionPolicy extends CompactionPolicy {
       LOG.debug("No good compaction is possible in any DPartition.");
       return null;
     }
-
-    List<HStoreFile> dPfilesToCompact = new ArrayList<>(bqSelection);
+    List<HStoreFile> dPFilesToCompact = new ArrayList<>(bqSelection);
     List<HStoreFile> l0Files = di.getLevel0Files();
     ConcatenatedLists<HStoreFile> sfs = new ConcatenatedLists<>();
-    sfs.addSublist(dPfilesToCompact);
+    sfs.addSublist(dPFilesToCompact);
     if (includeL0) {
       sfs.addSublist(l0Files);
     }
     DPCompactionRequest req = new DPCompactionRequest(sfs, di.getDPBoundaries());
-
-    if (dPfilesToCompact.size() == dPartitions.get(bqIndex).size() && includeL0) {
+    if (dPFilesToCompact.size() == dPartitions.get(bqIndex).size() && includeL0) {
       req.setMajorRange(di.getStartRow(bqIndex), di.getEndRow(bqIndex));
     }
-    req.getRequest().setOffPeak(isOffpeak);
+    req.getRequest().setOffPeak(isOffPeak);
     return req;
   }
 
-  private List<HStoreFile> selectSimpleCompaction(List<HStoreFile> sfs, boolean isOffpeak,
+  private List<HStoreFile> selectSimpleCompaction(List<HStoreFile> sfs, boolean isOffPeak,
     boolean forceCompact) {
     int minFilesLocal = this.dpStoreConfig.getDPartitionCompactMinFiles();
+    int maxFilesLocal = Math.max(this.dpStoreConfig.getDPartitionCompactMaxFiles(), minFilesLocal);
     List<HStoreFile> selected =
-      this.dPPolicy.applyCompactionPolicy(sfs, false, isOffpeak, minFilesLocal);
+      this.compactionPolicyInDP.applyCompactionPolicy(sfs, false, isOffPeak, minFilesLocal, maxFilesLocal);
     if (forceCompact && (selected == null || selected.isEmpty()) && !sfs.isEmpty()) {
-      return this.dPPolicy.selectCompactFiles(sfs, isOffpeak);
+      return this.compactionPolicyInDP.selectCompactFiles(sfs, maxFilesLocal, isOffPeak);
     }
     return selected;
   }
@@ -158,38 +154,31 @@ public class DPCompactionPolicy extends CompactionPolicy {
     return compactionSize > comConf.getThrottlePoint();
   }
 
-  /**
-   * The further wrapper of Dynamic-partition compaction request.
-   */
   public static class DPCompactionRequest {
-    private CompactionRequestImpl request;
     private final List<byte[]> dPBoundaries;
     protected byte[] majorRangeFromRow = null, majorRangeToRow = null;
+    private CompactionRequestImpl request;
 
     public DPCompactionRequest(CompactionRequestImpl request, List<byte[]> dPBoundaries) {
       this.request = request;
       this.dPBoundaries = dPBoundaries;
     }
 
-    public DPCompactionRequest(Collection<HStoreFile> files, List<byte[]> targetBoundaries) {
-      this(new CompactionRequestImpl(files), targetBoundaries);
+    public DPCompactionRequest(Collection<HStoreFile> files, List<byte[]> dPBoundaries) {
+      this(new CompactionRequestImpl(files), dPBoundaries);
     }
 
     /**
-     * Executes the request against compactor (essentially, just calls correct overload of compact
-     * method), to simulate more dynamic dispatch.
+     * Executes the request against compactor.
+     * Essentially, just calls correct overload of compact method.
+     * To simulate more dynamic dispatch.
      * @param compactor Compactor.
-     * @return result of compact(...)
+     * @return result of the compacting process.
      */
     public List<Path> execute(DPCompactor compactor, ThroughputController throughputController,
-      User user, DPAreaOfTS ats) throws IOException {
+      User user, DPAreaOfTS areaOfTransitStore) throws IOException {
       return compactor.compact(this.request, this.dPBoundaries, this.majorRangeFromRow,
-        this.majorRangeToRow, throughputController, user, ats);
-    }
-
-    public List<Path> execute(DPCompactor compactor, ThroughputController throughputController,
-      DPAreaOfTS ats) throws IOException {
-      return execute(compactor, throughputController, null, ats);
+        this.majorRangeToRow, throughputController, user, areaOfTransitStore);
     }
 
     public CompactionRequestImpl getRequest() {
@@ -203,8 +192,9 @@ public class DPCompactionPolicy extends CompactionPolicy {
     }
 
     /**
-     * Sets compaction "major range". Major range is the key range for which all the files are
-     * included, so they can be treated like major-compacted files.
+     * Sets compaction "major range".
+     * Major range is the key range for which all the files are included,
+     * so they can be treated like major-compacted files.
      * @param startRow Left boundary, inclusive.
      * @param endRow   Right boundary, exclusive.
      */

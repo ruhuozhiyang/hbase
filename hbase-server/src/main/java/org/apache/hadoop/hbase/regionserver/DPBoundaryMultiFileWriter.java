@@ -24,11 +24,11 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   private long cellsInCurrentWriter = 0;
   private int majorRangeFromIndex = -1, majorRangeToIndex = -1;
   private boolean hasAnyDPartitionWriter = false;
-  private  DPAreaOfTS ats;
+  private DPAreaOfTS areaOfTransitStore;
 
   public DPBoundaryMultiFileWriter(CellComparator cellComparator, List<byte[]> targetBoundaries,
-    byte[] majorRangeFrom, byte[] majorRangeTo, DPAreaOfTS ats) throws IOException {
-    this.ats = ats;
+    byte[] majorRangeFrom, byte[] majorRangeTo, DPAreaOfTS areaOfTransitStore) throws IOException {
+    this.areaOfTransitStore = areaOfTransitStore;
 
     this.cellComparator = cellComparator;
     this.boundaries = targetBoundaries;
@@ -67,7 +67,7 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
       this.lastCell = cell;
       ++this.cellsInCurrentWriter;
     } else {
-      this.ats.add(cell);
+      this.areaOfTransitStore.add(cell);
     }
   }
 

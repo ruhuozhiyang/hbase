@@ -21,6 +21,13 @@ public class DPAreaOfTS {
       this.store.getComparator(), null);
   }
 
+  public int getCellCount() {
+    this.atsLock.readLock().lock();
+    int cellCount = this.transitStoreArea.getCellsCount();
+    this.atsLock.readLock().unlock();
+    return cellCount;
+  }
+
   public void add(Cell cell) {
     this.atsLock.readLock().lock();
     this.transitStoreArea.add(cell, false, null, false);

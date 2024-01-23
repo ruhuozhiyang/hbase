@@ -23,7 +23,7 @@ public class DPStoreEngine extends
   StoreEngine<DPStoreFlusher, DPCompactionPolicy, DPCompactor, DPStoreFileManager>{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreEngine.class);
   private DPStoreConfig config;
-  private DPAreaOfTS ats;
+  private DPAreaOfTS areaOfTempSFiles;
 
   @Override
   public boolean needsCompaction(List filesCompacting) {
@@ -32,28 +32,28 @@ public class DPStoreEngine extends
 
   @Override
   public CompactionContext createCompaction() throws IOException {
-    final DPCompaction dpCompaction = new DPCompaction();
-    dpCompaction.setAts(this.ats);
+    DPCompaction dpCompaction = new DPCompaction();
+    dpCompaction.setAts(this.areaOfTempSFiles);
     return dpCompaction;
   }
 
   @Override
   protected void createComponents(Configuration conf, HStore store, CellComparator cellComparator)
     throws IOException {
-    this.ats = new DPAreaOfTS(store, conf);
     this.config = new DPStoreConfig(conf);
+    this.areaOfTempSFiles = new DPAreaOfTS(store, conf);
+    this.storeFileManager = new DPStoreFileManager(cellComparator, conf, this.config);
+    this.storeFlusher = new DPStoreFlusher(conf, store, this.storeFileManager, this.areaOfTempSFiles);
     this.compactionPolicy = new DPCompactionPolicy(conf, store, this.config);
     this.compactor = new DPCompactor(conf, store);
-    this.storeFileManager = new DPStoreFileManager(cellComparator, conf, this.config);
-    this.storeFlusher = new DPStoreFlusher(conf, store, this.storeFileManager, this.ats);
   }
 
   private class DPCompaction extends CompactionContext {
     private DPCompactionPolicy.DPCompactionRequest dPRequest = null;
-    private DPAreaOfTS ats;
+    private DPAreaOfTS areaOfTransitStore = null;
 
-    public void setAts(DPAreaOfTS ats) {
-      this.ats = ats;
+    public void setAts(DPAreaOfTS areaOfTransitStore) {
+      this.areaOfTransitStore = areaOfTransitStore;
     }
 
     @Override
@@ -77,7 +77,7 @@ public class DPStoreEngine extends
       if (this.dPRequest != null) {
         this.dPRequest.setRequest(this.request);
       } else {
-        LOG.warn("DP store is forced to take an arbitrary file list and compact it.");
+        LOG.warn("DPStore is forced to take an arbitrary file list and compact it.");
         this.dPRequest = compactionPolicy.createEmptyRequest(storeFileManager, this.request);
       }
     }
@@ -86,7 +86,7 @@ public class DPStoreEngine extends
     public List<Path> compact(ThroughputController throughputController, User user)
       throws IOException {
       Preconditions.checkArgument(this.dPRequest != null, "Cannot compact without selection");
-      return this.dPRequest.execute(compactor, throughputController, user, this.ats);
+      return this.dPRequest.execute(compactor, throughputController, user, this.areaOfTransitStore);
     }
   }
 }

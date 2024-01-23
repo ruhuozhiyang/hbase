@@ -82,6 +82,7 @@ public class DPClusterAnalysis {
 
   public void kMeans() {
     while (true) {
+      int numOfIteration = 0;
       boolean stable = false;
       List<byte[]> newKernels = doIteration2UpdateKernels(this.initKernel);
       final List<String> newKernelsString =
@@ -91,21 +92,39 @@ public class DPClusterAnalysis {
       if (newKernelsString.containsAll(preKernelString)) {
         stable = true;
       }
-      if (stable) {
+      if (stable || numOfIteration >= 50) {
         if (initKernel.size() == 2) {
           LOG.info("After K-Means, Get Kernels:[{}, {}]", new String(initKernel.get(0)), new String(initKernel.get(1)));
         }
         break;
       } else {
         this.initKernel = newKernels;
+        ++numOfIteration;
       }
     }
   }
 
   public void prune2GetDPBoundaries() {
     if (this.initKernel.size() < 2) {
-      LOG.warn("CA Kernels Num is smaller than 2.");
-      this.newDPBoundaries = new ArrayList<>(this.oldDPBoundaries);
+      StringBuilder message = new StringBuilder();
+      message.append("The Num of Kernels Gotten through Cluster-Analysis is smaller than 2,");
+      if (this.oldDPBoundaries != null) {
+        this.newDPBoundaries = new ArrayList<>(this.oldDPBoundaries);
+        message.append("Use the old DPBoundaries.");
+      } else if (this.initKernel.size() == 1){
+        byte[] originKernel = this.initKernel.get(0);
+        byte[] leftBoundary = new byte[originKernel.length];
+        System.arraycopy(originKernel, 0, leftBoundary, 0, originKernel.length);
+        int nLeftBoundaryEle = (leftBoundary[compareIndex] & 0xFF) - 1;
+        leftBoundary[compareIndex] = (byte) (nLeftBoundaryEle < 48 ? 48 : nLeftBoundaryEle);
+
+        byte[] rightBoundary = new byte[originKernel.length];
+        System.arraycopy(originKernel, 0, rightBoundary, 0, originKernel.length);
+        int nRightBoundaryEle = (rightBoundary[compareIndex] & 0xFF) + 1;
+        rightBoundary[compareIndex] = (byte) (nRightBoundaryEle > 57 ? 57 : nRightBoundaryEle);
+        message.append("Kernels Num is 1, and prune to Get DPBoundaries.");
+      }
+      LOG.warn(message.toString());
       return;
     }
     final byte[] kernel1 = this.initKernel.get(0);

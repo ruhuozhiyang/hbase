@@ -31,34 +31,27 @@ import java.util.*;
 @InterfaceAudience.Private
 public class DPStoreFileManager implements StoreFileManager, DPInformationProvider {
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreFileManager.class);
-  /**
-   * The file metadata fields that contain the DP information.
-   */
+  private final static Bytes.RowEndKeyComparator MAP_COMPARATOR = new Bytes.RowEndKeyComparator();
+  private final static byte[] INVALID_KEY = null;
+
+  // The file metadata fields that contain the DP information.
   public static final byte[] DP_START_KEY = Bytes.toBytes("DP_START_KEY");
   public static final byte[] DP_END_KEY = Bytes.toBytes("DP_END_KEY");
-  private final static Bytes.RowEndKeyComparator MAP_COMPARATOR = new Bytes.RowEndKeyComparator();
-  /**
-   * The key value used for range boundary, indicating that the boundary is open (i.e. +-inf).
-   */
+  // The key value used for range boundary, indicating that the boundary is open (i.e. +-inf).
   public final static byte[] OPEN_KEY = HConstants.EMPTY_BYTE_ARRAY;
-  final static byte[] INVALID_KEY = null;
 
   /**
    * The state class. Used solely to replace results atomically during compactions and avoid
    * complicated error handling.
    */
   private static class State {
-    public void setdPBoundaries(byte[][] dPBoundaries) {
-      this.dPBoundaries = dPBoundaries;
-    }
-
     public byte[][] dPBoundaries = new byte[0][];
     /**
      * Files by DP. Each element of the list corresponds to dPBoundaries elements
      * with index: [2 * i, 2 * i + 1].
      * Inside each list, the files are in reverse order by seqNum.
      */
-    public ArrayList<ImmutableList<HStoreFile>> dpFiles = new ArrayList<>();
+    public ArrayList<ImmutableList<HStoreFile>> dPFiles = new ArrayList<>();
     /**
      * Level 0.
      * The files are in reverse order by seqNum.
@@ -74,8 +67,8 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
   /**
    * Cached file metadata (or overrides as the case may be) .
    */
-  private HashMap<HStoreFile, byte[]> fileStarts = new HashMap<>();
-  private HashMap<HStoreFile, byte[]> fileEnds = new HashMap<>();
+  private HashMap<HStoreFile, byte[]> fileStartRow = new HashMap<>();
+  private HashMap<HStoreFile, byte[]> fileEndRow = new HashMap<>();
   /**
    * Normally invalid key is null, but in the map null is the result for "no key";
    * so use the following constant value in these maps instead.
@@ -173,14 +166,14 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     // Copy the results into the fields.
     State state = new State();
     state.level0Files = ImmutableList.copyOf(level0Files);
-    state.dpFiles = new ArrayList<>(candidateDPartitions.size());
+    state.dPFiles = new ArrayList<>(candidateDPartitions.size());
     state.dPBoundaries = new byte[Math.max(0, candidateDPartitions.size()) * 2][];
     ArrayList<HStoreFile> newAllFiles = new ArrayList<>(level0Files);
     for (Map.Entry<byte[], ArrayList<HStoreFile>> entry : candidateDPartitions.entrySet()) {
-      state.dpFiles.add(ImmutableList.copyOf(entry.getValue()));
+      state.dPFiles.add(ImmutableList.copyOf(entry.getValue()));
       newAllFiles.addAll(entry.getValue());
-      state.dPBoundaries[2 * state.dpFiles.size() - 2] = startRows[state.dpFiles.size() - 1];
-      state.dPBoundaries[2 * state.dpFiles.size() - 1] = entry.getKey();
+      state.dPBoundaries[(2 * state.dPFiles.size()) - 2] = startRows[state.dPFiles.size() - 1];
+      state.dPBoundaries[(2 * state.dPFiles.size()) - 1] = entry.getKey();
     }
     state.allFilesCached = ImmutableList.copyOf(newAllFiles);
     this.state = state;
@@ -194,7 +187,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     sb.append("\n level 0 with ").append(state.level0Files.size())
       .append(" files: " + StringUtils.TraditionalBinaryPrefix
         .long2String(getTotalFileSize(state.level0Files), "", 1) + ";");
-    for (int i = 0; i < state.dpFiles.size(); ++i) {
+    for (int i = 0; i < state.dPFiles.size(); ++i) {
       String startRow = (i == 0)
         ? "(start)"
         : "[" + Bytes.toString(state.dPBoundaries[2 * i]) + "]";
@@ -203,31 +196,24 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
         : "[" + Bytes.toString(state.dPBoundaries[2 * i + 1]) + "]";
       sb.append("\n dPartition starting in ").append(startRow)
         .append("\n dPartition ending in ").append(endRow).append(" with ")
-        .append(state.dpFiles.get(i).size())
+        .append(state.dPFiles.get(i).size())
         .append(" files: " + StringUtils.TraditionalBinaryPrefix.long2String(
-          getTotalFileSize(state.dpFiles.get(i)), "", 1) + ";");
+          getTotalFileSize(state.dPFiles.get(i)), "", 1) + ";");
     }
-    sb.append("\n").append(state.dpFiles.size()).append(" dPartition total.");
+    sb.append("\n").append(state.dPFiles.size()).append(" dPartition total.");
     sb.append("\n").append(getStorefileCount()).append(" files total.");
     LOG.info(sb.toString());
   }
 
-  /**
-   * Compare two keys for equality.
-   */
-  private boolean rowEquals(byte[] k1, byte[] k2) {
-    return Bytes.equals(k1, 0, k1.length, k2, 0, k2.length);
-  }
-
   private byte[] startOf(HStoreFile sf) {
-    byte[] result = fileStarts.get(sf);
+    byte[] result = fileStartRow.get(sf);
     return (result == null) ? sf.getMetadataValue(DP_START_KEY)
       : result == INVALID_KEY_IN_MAP ? INVALID_KEY
       : result;
   }
 
   private byte[] endOf(HStoreFile sf) {
-    byte[] result = fileEnds.get(sf);
+    byte[] result = fileEndRow.get(sf);
     return (result == null) ? sf.getMetadataValue(DP_END_KEY)
       : result == INVALID_KEY_IN_MAP ? INVALID_KEY
       : result;
@@ -257,8 +243,8 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
   }
 
   private void ensureLevel0Metadata(HStoreFile sf) {
-    if (!isInvalid(startOf(sf))) this.fileStarts.put(sf, INVALID_KEY_IN_MAP);
-    if (!isInvalid(endOf(sf))) this.fileEnds.put(sf, INVALID_KEY_IN_MAP);
+    if (!isInvalid(startOf(sf))) this.fileStartRow.put(sf, INVALID_KEY_IN_MAP);
+    if (!isInvalid(endOf(sf))) this.fileEndRow.put(sf, INVALID_KEY_IN_MAP);
   }
 
   /**
@@ -342,14 +328,13 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
 
     public CompactionOrFlushMergeCopy(boolean isFlush) {
       // Create a lazy mutable copy (other fields are so lazy they start out as nulls).
-      this.dPFiles = new ArrayList<>(DPStoreFileManager.this.state.dpFiles);
+      this.dPFiles = new ArrayList<>(DPStoreFileManager.this.state.dPFiles);
       this.isFlush = isFlush;
       this.dPBoundaries =
         new ArrayList<>(Arrays.asList(DPStoreFileManager.this.state.dPBoundaries));
     }
 
-    private void mergeResults(Collection<HStoreFile> compactedFiles,
-      Collection<HStoreFile> results) {
+    private void mergeResults(Collection<HStoreFile> compactedFiles, Collection<HStoreFile> results) {
       assert this.compactedFiles == null && this.results == null;
       this.compactedFiles = compactedFiles;
       this.results = results;
@@ -378,14 +363,14 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     private DPStoreFileManager.State createNewState(boolean delCompactedFiles) {
       DPStoreFileManager.State oldState = DPStoreFileManager.this.state;
       // dPartition count should be the same unless the end rows changed.
-      assert oldState.dpFiles.size() == this.dPFiles.size() || this.dPBoundaries != null;
+      assert oldState.dPFiles.size() == this.dPFiles.size() || this.dPBoundaries != null;
       DPStoreFileManager.State newState = new DPStoreFileManager.State();
       newState.level0Files =
         (this.level0Files == null) ? oldState.level0Files : ImmutableList.copyOf(this.level0Files);
       newState.dPBoundaries = this.dPBoundaries.toArray(new byte[this.dPBoundaries.size()][]);
-      newState.dpFiles = new ArrayList<>(this.dPFiles.size());
+      newState.dPFiles = new ArrayList<>(this.dPFiles.size());
       for (List<HStoreFile> newDPartition : this.dPFiles) {
-        newState.dpFiles.add(newDPartition instanceof ImmutableList<?>
+        newState.dPFiles.add(newDPartition instanceof ImmutableList<?>
           ? (ImmutableList<HStoreFile>) newDPartition
           : ImmutableList.copyOf(newDPartition));
       }
@@ -412,8 +397,8 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
       DPStoreFileManager parent = DPStoreFileManager.this;
       if (!isFlush) {
         for (HStoreFile sf : this.compactedFiles) {
-          parent.fileStarts.remove(sf);
-          parent.fileEnds.remove(sf);
+          parent.fileStartRow.remove(sf);
+          parent.fileEndRow.remove(sf);
         }
       }
       if (this.l0Results != null) {
@@ -553,8 +538,8 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
   public ImmutableCollection<HStoreFile> clearFiles() {
     ImmutableCollection<HStoreFile> result = this.state.allFilesCached;
     this.state = new State();
-    this.fileStarts.clear();
-    this.fileEnds.clear();
+    this.fileStartRow.clear();
+    this.fileEndRow.clear();
     return result;
   }
 
@@ -567,6 +552,21 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
 
   @Override public Collection<HStoreFile> getStorefiles() {
     return this.state.allFilesCached;
+  }
+
+  @Override
+  public int getStorefileCount() {
+    return getMaxStoreFileCountInDP();
+  }
+
+  private int getMaxStoreFileCountInDP() {
+    int maxFileSize = 0;
+    for (ImmutableList<HStoreFile> dpFile : this.state.dPFiles) {
+      if (dpFile.size() > maxFileSize) {
+        maxFileSize = dpFile.size();
+      }
+    }
+    return maxFileSize;
   }
 
   @Override
@@ -585,7 +585,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
 
   @Override
   public List<byte[]> getDPBoundaries() {
-    if (this.state.dpFiles.isEmpty()) {
+    if (this.state.dPFiles.isEmpty()) {
       return Collections.emptyList();
     }
     ArrayList<byte[]> result = new ArrayList<>(this.state.dPBoundaries.length);
@@ -593,33 +593,19 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     return result;
   }
 
-  public void updateStateDPBoundaries(List<byte[]> dpBoundaries) {
-    byte[][] newDpBoundaries = new byte[dpBoundaries.size()][];
-    for (int i = 0; i < dpBoundaries.size(); i++) {
-      newDpBoundaries[i] = dpBoundaries.get(i);
-    }
-    DPStoreFileManager.State oldState = DPStoreFileManager.this.state;
-    oldState.setdPBoundaries(newDpBoundaries);
-  }
-
   @Override
   public ArrayList<ImmutableList<HStoreFile>> getDPs() {
-    return this.state.dpFiles;
+    return this.state.dPFiles;
   }
 
   @Override
   public int getDPCount() {
-    return this.state.dpFiles.size();
+    return this.state.dPFiles.size();
   }
 
   @Override
   public Collection<HStoreFile> getCompactedfiles() {
     return this.state.allCompactedFilesCached;
-  }
-
-  @Override
-  public int getStorefileCount() {
-    return this.state.allFilesCached.size();
   }
 
   @Override
@@ -630,30 +616,36 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
   @Override
   public Collection<HStoreFile> getFilesForScan(byte[] startRow, boolean includeStartRow,
     byte[] stopRow, boolean includeStopRow) {
-    if (state.dpFiles.isEmpty()) {
+    if (state.dPFiles.isEmpty()) {
       return Collections.emptyList();
     }
 
-    int firstPartition = findDPartitionForRow(startRow);
-    int lastPartition = findDPartitionForRow(stopRow);
+    int firstPartition = findDPartitionForRow(startRow, true);
+    int lastPartition = findDPartitionForRow(stopRow, false);
     assert firstPartition <= lastPartition;
     if (firstPartition == lastPartition) {
-      return state.dpFiles.get(lastPartition);
+      return state.dPFiles.get(lastPartition);
     }
-    if (firstPartition == 0 && lastPartition == (state.dpFiles.size() - 1)) {
+    if (firstPartition == 0 && lastPartition == (state.dPFiles.size() - 1)) {
       return state.allFilesCached;
     }
 
     ConcatenatedLists<HStoreFile> result = new ConcatenatedLists<>();
-    result.addAllSublists(state.dpFiles.subList(firstPartition, lastPartition + 1));
+    result.addAllSublists(state.dPFiles.subList(firstPartition, lastPartition + 1));
     return result;
   }
 
   /**
    * Finds the dPartition index for the dPartition containing a row provided externally for get/scan.
    */
-  private int findDPartitionForRow(byte[] row) {
-    return Math.abs(Arrays.binarySearch(state.dPBoundaries, row, Bytes.BYTES_COMPARATOR) + 1) / 2;
+  private int findDPartitionForRow(byte[] row, boolean isFirst) {
+    int index = Arrays.binarySearch(state.dPBoundaries, row, Bytes.BYTES_COMPARATOR);
+    if (index >= 0) {
+      return index / 2;
+    }
+    int insertPoint = Math.abs(index + 1);
+    return isFirst ? (insertPoint / 2) : (insertPoint % 2 == 1)
+      ? (insertPoint / 2) : ((insertPoint / 2) - 1);
   }
 
   @Override
@@ -661,10 +653,10 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     KeyBeforeConcatenatedLists result = new KeyBeforeConcatenatedLists();
     // Order matters for this call.
     result.addSublist(state.level0Files);
-    if (!state.dpFiles.isEmpty()) {
-      int lastDPartitionIndex = findDPartitionForRow(CellUtil.cloneRow(targetKey));
+    if (!state.dPFiles.isEmpty()) {
+      int lastDPartitionIndex = findDPartitionForRow(CellUtil.cloneRow(targetKey), false);
       for (int dPartitionIndex = lastDPartitionIndex; dPartitionIndex >= 0; --dPartitionIndex) {
-        result.addSublist(state.dpFiles.get(dPartitionIndex));
+        result.addSublist(state.dPFiles.get(dPartitionIndex));
       }
     }
     return result.iterator();
@@ -744,10 +736,10 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     if (this.getStorefileCount() == 0) {
       return Optional.empty();
     }
-    if (state.dpFiles.size() <= 1) {
+    if (state.dPFiles.size() <= 1) {
       return getSplitPointFromAllFiles();
     }
-    int leftIndex = -1, rightIndex = state.dpFiles.size();
+    int leftIndex = -1, rightIndex = state.dPFiles.size();
     long leftSize = 0, rightSize = 0;
     long lastLeftSize = 0, lastRightSize = 0;
     while (rightIndex - 1 != leftIndex) {
@@ -794,7 +786,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     LOG.debug("Splitting the stripe - ratio w/o split " + ratio + ", ratio with split " + newRatio
       + " configured ratio " + config.getMaxSplitImbalance());
     // OK, we may get better ratio, get it.
-    return StoreUtils.getSplitPoint(state.dpFiles.get(isRightLarger ? rightIndex : leftIndex),
+    return StoreUtils.getSplitPoint(state.dPFiles.get(isRightLarger ? rightIndex : leftIndex),
       cellComparator);
   }
 
@@ -805,7 +797,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
   private Optional<byte[]> getSplitPointFromAllFiles() throws IOException {
     ConcatenatedLists<HStoreFile> sfs = new ConcatenatedLists<>();
     sfs.addSublist(state.level0Files);
-    sfs.addAllSublists(state.dpFiles);
+    sfs.addAllSublists(state.dPFiles);
     return StoreUtils.getSplitPoint(sfs, cellComparator);
   }
 
@@ -816,7 +808,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
    */
   private long getDPartitionFilesSize(int dPartitionIndex) {
     long result = 0;
-    for (HStoreFile sf : state.dpFiles.get(dPartitionIndex)) {
+    for (HStoreFile sf : state.dPFiles.get(dPartitionIndex)) {
       result += sf.getReader().length();
     }
     return result;
@@ -828,13 +820,13 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     // If we are in critical priority, do the same - we don't want to trump all stores all
     // the time due to how many files we have.
     int fc = getStorefileCount();
-    if (state.dpFiles.isEmpty() || (this.blockingFileCount <= fc)) {
+    if (state.dPFiles.isEmpty() || (this.blockingFileCount <= fc)) {
       return this.blockingFileCount - fc;
     }
     // If we are in good shape, we don't want to be trumped by all other stores due to how
     // many files we have, so do an approximate mapping to normal priority range; L0 counts
     // for all stripes.
-    int l0 = state.level0Files.size(), sc = state.dpFiles.size();
+    int l0 = state.level0Files.size(), sc = state.dPFiles.size();
     int priority = (int) Math.ceil(((double) (this.blockingFileCount - fc + l0) / sc) - l0);
     return (priority <= HStore.PRIORITY_USER) ? (HStore.PRIORITY_USER + 1) : priority;
   }
@@ -845,7 +837,7 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
     // 2) Files that are not the latest can't become one due to (1), so the rest are fair game.
     State state = this.state;
     Collection<HStoreFile> expiredStoreFiles = null;
-    for (ImmutableList<HStoreFile> dPartition : state.dpFiles) {
+    for (ImmutableList<HStoreFile> dPartition : state.dPFiles) {
       expiredStoreFiles = findExpiredFiles(dPartition, maxTs, filesCompacting, expiredStoreFiles);
     }
     return findExpiredFiles(state.level0Files, maxTs, filesCompacting, expiredStoreFiles);
@@ -878,15 +870,15 @@ public class DPStoreFileManager implements StoreFileManager, DPInformationProvid
       // just a hit to tell others that we have reached the blocking file count.
       return 2.0;
     }
-    if (stateLocal.dpFiles.isEmpty()) {
+    if (stateLocal.dPFiles.isEmpty()) {
       return 0.0;
     }
-    int blockingFilePerStripe = blockingFileCount / stateLocal.dpFiles.size();
+    int blockingFilePerStripe = blockingFileCount / stateLocal.dPFiles.size();
     // do not calculate L0 separately because data will be moved to stripe quickly and in most cases
     // we flush data to stripe directly.
     int delta = stateLocal.level0Files.isEmpty() ? 0 : 1;
     double max = 0.0;
-    for (ImmutableList<HStoreFile> dPFile : stateLocal.dpFiles) {
+    for (ImmutableList<HStoreFile> dPFile : stateLocal.dPFiles) {
       int dPFileCount = dPFile.size();
       double normCount = (double) (dPFileCount + delta - config.getDPartitionCompactMinFiles())
         / (blockingFilePerStripe - config.getDPartitionCompactMinFiles());

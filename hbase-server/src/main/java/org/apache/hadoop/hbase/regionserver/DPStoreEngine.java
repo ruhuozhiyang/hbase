@@ -23,7 +23,7 @@ public class DPStoreEngine extends
   StoreEngine<DPStoreFlusher, DPCompactionPolicy, DPCompactor, DPStoreFileManager>{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreEngine.class);
   private DPStoreConfig config;
-  private DPAreaOfTS areaOfTempSFiles;
+  private DPTransitStoreArea areaOfTransitStore;
 
   @Override
   public boolean needsCompaction(List filesCompacting) {
@@ -33,7 +33,7 @@ public class DPStoreEngine extends
   @Override
   public CompactionContext createCompaction() throws IOException {
     DPCompaction dpCompaction = new DPCompaction();
-    dpCompaction.setAts(this.areaOfTempSFiles);
+    dpCompaction.setAts(this.areaOfTransitStore);
     return dpCompaction;
   }
 
@@ -41,18 +41,18 @@ public class DPStoreEngine extends
   protected void createComponents(Configuration conf, HStore store, CellComparator cellComparator)
     throws IOException {
     this.config = new DPStoreConfig(conf);
-    this.areaOfTempSFiles = new DPAreaOfTS(store, conf);
+    this.areaOfTransitStore = new DPTransitStoreArea(store, conf);
     this.storeFileManager = new DPStoreFileManager(cellComparator, conf, this.config);
-    this.storeFlusher = new DPStoreFlusher(conf, store, this.storeFileManager, this.areaOfTempSFiles);
+    this.storeFlusher = new DPStoreFlusher(conf, store, this.storeFileManager, this.areaOfTransitStore);
     this.compactionPolicy = new DPCompactionPolicy(conf, store, this.config);
     this.compactor = new DPCompactor(conf, store);
   }
 
   private class DPCompaction extends CompactionContext {
     private DPCompactionPolicy.DPCompactionRequest dPRequest = null;
-    private DPAreaOfTS areaOfTransitStore = null;
+    private DPTransitStoreArea areaOfTransitStore = null;
 
-    public void setAts(DPAreaOfTS areaOfTransitStore) {
+    public void setAts(DPTransitStoreArea areaOfTransitStore) {
       this.areaOfTransitStore = areaOfTransitStore;
     }
 

@@ -24,7 +24,7 @@ public class DPCompactor extends AbstractMultiOutputCompactor<DPBoundaryMultiFil
 
   public List<Path> compact(CompactionRequestImpl request, final List<byte[]> targetBoundaries,
     final byte[] majorRangeFromRow, final byte[] majorRangeToRow,
-    ThroughputController throughputController, User user, DPAreaOfTS ats) throws IOException {
+    ThroughputController throughputController, User user, DPTransitStoreArea ats) throws IOException {
     StringBuilder sb = new StringBuilder();
     sb.append("Executing compaction with " + targetBoundaries.size() / 2 + " boundaries:");
     for (int j = 0; j < targetBoundaries.size(); j = j + 2) {

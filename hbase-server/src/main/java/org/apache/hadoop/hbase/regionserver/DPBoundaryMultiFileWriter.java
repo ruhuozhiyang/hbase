@@ -6,7 +6,6 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.util.*;
 
@@ -24,10 +23,10 @@ public class DPBoundaryMultiFileWriter extends AbstractMultiFileWriter {
   private long cellsInCurrentWriter = 0;
   private int majorRangeFromIndex = -1, majorRangeToIndex = -1;
   private boolean hasAnyDPartitionWriter = false;
-  private DPAreaOfTS areaOfTransitStore;
+  private DPTransitStoreArea areaOfTransitStore;
 
   public DPBoundaryMultiFileWriter(CellComparator cellComparator, List<byte[]> targetBoundaries,
-    byte[] majorRangeFrom, byte[] majorRangeTo, DPAreaOfTS areaOfTransitStore) throws IOException {
+    byte[] majorRangeFrom, byte[] majorRangeTo, DPTransitStoreArea areaOfTransitStore) throws IOException {
     this.areaOfTransitStore = areaOfTransitStore;
 
     this.cellComparator = cellComparator;

@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NavigableMap;
 import java.util.function.Consumer;
 
 @InterfaceAudience.Private
@@ -21,10 +22,10 @@ public class DPStoreFlusher extends StoreFlusher{
   private static final Logger LOG = LoggerFactory.getLogger(DPStoreFlusher.class);
   private final Object flushLock = new Object();
   private final DPStoreFileManager dPFileManager;
-  private final DPAreaOfTS areaOfTransitStore;
+  private final DPTransitStoreArea areaOfTransitStore;
 
   public DPStoreFlusher(Configuration conf, HStore store, DPStoreFileManager dPFileManager,
-    DPAreaOfTS areaOfTransitStore) {
+    DPTransitStoreArea areaOfTransitStore) {
     super(conf, store);
     this.dPFileManager = dPFileManager;
     this.areaOfTransitStore = areaOfTransitStore;
@@ -66,13 +67,9 @@ public class DPStoreFlusher extends StoreFlusher{
 
       synchronized (flushLock) {
         performFlush(scanner, mw, throughputController);
-//        if (req instanceof UpdateBoundaryAndDPFlushRequest) {
-//          NavigableMap<Cell, Cell> sortedCellsInATS = ((UpdateBoundaryAndDPFlushRequest) req).getSortedCellsInATS();
-//          final Iterator<Cell> sortedCells = sortedCellsInATS.values().iterator();
-//          while (sortedCells.hasNext()) {
-//            mw.append(sortedCells.next());
-//          }
-//        }
+        if (req instanceof UpdateBoundaryAndDPFlushRequest) {
+          ((UpdateBoundaryAndDPFlushRequest) req).flushTransitStoreArea(areaOfTransitStore, mw);
+        }
         result = mw.commitWriters(cacheFlushSeqNum, false);
         success = true;
       }
@@ -98,9 +95,9 @@ public class DPStoreFlusher extends StoreFlusher{
 
   public DPFlushRequest selectFlush(InternalScanner scannerForCA, CellComparator cellComparator,
     DPStoreFileManager dPFileManager) {
-    return dPFileManager.getDPBoundaries().size() == 0
-            ? new GenBoundaryAndDPFlushRequest(cellComparator, scannerForCA)
-            : new UpdateBoundaryAndDPFlushRequest(cellComparator, dPFileManager);
+    return dPFileManager.getDPCount() > 0
+            ? new UpdateBoundaryAndDPFlushRequest(cellComparator, dPFileManager)
+            : new GenBoundaryAndDPFlushRequest(cellComparator, scannerForCA);
   }
 
   public static abstract class DPFlushRequest {
@@ -110,7 +107,7 @@ public class DPStoreFlusher extends StoreFlusher{
       this.cellComparator = cellComparator;
     }
 
-    public abstract DPBoundaryMultiFileWriter createWriter(DPAreaOfTS areaOfTransitStore) throws IOException;
+    public abstract DPBoundaryMultiFileWriter createWriter(DPTransitStoreArea areaOfTransitStore) throws IOException;
   }
 
   public static class GenBoundaryAndDPFlushRequest extends DPFlushRequest {
@@ -122,7 +119,7 @@ public class DPStoreFlusher extends StoreFlusher{
     }
 
     @Override
-    public DPBoundaryMultiFileWriter createWriter(DPAreaOfTS areaOfTransitStore) throws IOException {
+    public DPBoundaryMultiFileWriter createWriter(DPTransitStoreArea areaOfTransitStore) throws IOException {
       List<byte[]> newDpBoundaries = doCA2GenDPBoundaries();
       LOG.info("[Gen DPBoundaries] Gen dPBoundaries:{}, size:[{}].",
               newDpBoundaries.toString(), newDpBoundaries.size());
@@ -153,10 +150,10 @@ public class DPStoreFlusher extends StoreFlusher{
       } while (hasMore);
 
       DPClusterAnalysis dpCA = new DPClusterAnalysis();
-      dpCA.loadData(rowKeys);
+      dpCA.loadRowKeys(rowKeys);
       dpCA.initKernels();
       dpCA.kMeans();
-      dpCA.prune2GetDPBoundaries();
+      dpCA.pruneToSetDPBoundaries();
       return dpCA.getDpBoundaries();
     }
   }
@@ -176,14 +173,27 @@ public class DPStoreFlusher extends StoreFlusher{
       this.dPFileManager = dPFileManager;
     }
 
+    public void flushTransitStoreArea(DPTransitStoreArea areaOfTransitStore,
+      DPBoundaryMultiFileWriter mw) throws IOException {
+      NavigableMap<Cell, Cell> sortedCellsInATS = areaOfTransitStore.getTransitStoreAreaSnapshot();
+      if (sortedCellsInATS != null) {
+        final Iterator<Cell> sortedCells = sortedCellsInATS.values().iterator();
+        while (sortedCells.hasNext()) {
+          mw.append(sortedCells.next());
+        }
+      }
+      areaOfTransitStore.resetTransitStoreAreaSnapshot();
+    }
+
     @Override
-    public DPBoundaryMultiFileWriter createWriter(DPAreaOfTS areaOfTransitStore) throws IOException {
+    public DPBoundaryMultiFileWriter createWriter(DPTransitStoreArea areaOfTransitStore) throws IOException {
       List<byte[]> newDpBoundaries;
       StringBuilder message = new StringBuilder();
       if (areaOfTransitStore.getCellCount() > 0) {
         message.append("[Update DPBoundaries],");
+        LOG.info("[Update DPBoundaries],");
         newDpBoundaries = doCA2UpdateDPBoundaries(areaOfTransitStore, this.dPFileManager.getDPBoundaries());
-        message.append("Update DPBoundaries To:" + serializeDPBoundaries2String(newDpBoundaries));
+        message.append(DPClusterAnalysis.serializeToString("Update DPBoundaries To:", newDpBoundaries));
       } else {
         newDpBoundaries = new ArrayList<>(this.dPFileManager.getDPBoundaries());
         message.append("The CellCount of areaOfTransitStore is 0, and Skip Updating DPBoundaries.");
@@ -193,7 +203,7 @@ public class DPStoreFlusher extends StoreFlusher{
               null, null, areaOfTransitStore);
     }
 
-    private List<byte[]> doCA2UpdateDPBoundaries(DPAreaOfTS areaOfTransitStore, List<byte[]> oldBoundaries) {
+    private List<byte[]> doCA2UpdateDPBoundaries(DPTransitStoreArea areaOfTransitStore, List<byte[]> oldBoundaries) {
       List<byte[]> rowKeys = new ArrayList<>();
       int countForDebug = 0;
       for (Cell cell : areaOfTransitStore.getAllCellsAndSnapShotAndReset()) {
@@ -207,29 +217,13 @@ public class DPStoreFlusher extends StoreFlusher{
           ++countForDebug;
         }
       }
-
       DPClusterAnalysis dpCA = new DPClusterAnalysis();
-      dpCA.loadData(rowKeys);
+      dpCA.loadRowKeys(rowKeys);
       dpCA.initKernels();
       dpCA.kMeans();
       dpCA.setOldDPBoundaries(oldBoundaries);
-      dpCA.prune2GetDPBoundaries();
+      dpCA.pruneToSetDPBoundaries();
       return dpCA.getDpBoundaries();
-    }
-
-    public static String serializeDPBoundaries2String(List<byte[]> dPBoundaries) {
-      Iterator<byte[]> it = dPBoundaries.iterator();
-      if (! it.hasNext())
-        return "[]";
-      StringBuilder sb = new StringBuilder();
-      sb.append('[');
-      for (;;) {
-        byte[] e = it.next();
-        sb.append((e instanceof byte[]) ? new String(e) : e);
-        if (! it.hasNext())
-          return sb.append(']').toString();
-        sb.append(',');
-      }
     }
   }
 }

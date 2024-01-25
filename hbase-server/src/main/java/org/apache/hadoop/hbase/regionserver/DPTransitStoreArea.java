@@ -5,20 +5,24 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.yetus.audience.InterfaceAudience;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.NavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 @InterfaceAudience.Private
-public class DPAreaOfTS {
+public class DPTransitStoreArea {
   private volatile MutableSegment transitStoreArea;
+  private volatile NavigableMap<Cell, Cell> transitStoreAreaSnapshot;
   private HStore store;
   private Configuration conf;
   private final ReentrantReadWriteLock atsLock = new ReentrantReadWriteLock();
 
-  public DPAreaOfTS(HStore store, Configuration conf) {
+  public DPTransitStoreArea(HStore store, Configuration conf) {
     this.store = store;
     this.conf = conf;
     this.transitStoreArea = SegmentFactory.instance().createMutableSegment(this.conf,
       this.store.getComparator(), null);
+    this.transitStoreAreaSnapshot = new ConcurrentSkipListMap<>(this.store.getComparator().getSimpleComparator());
   }
 
   public int getCellCount() {
@@ -26,6 +30,19 @@ public class DPAreaOfTS {
     int cellCount = this.transitStoreArea.getCellsCount();
     this.atsLock.readLock().unlock();
     return cellCount;
+  }
+
+  public NavigableMap<Cell, Cell> getTransitStoreAreaSnapshot() {
+    this.atsLock.readLock().lock();
+    final NavigableMap<Cell, Cell> tSAS = transitStoreAreaSnapshot;
+    this.atsLock.readLock().unlock();
+    return tSAS;
+  }
+
+  public void resetTransitStoreAreaSnapshot() {
+    this.atsLock.writeLock().lock();
+    this.transitStoreAreaSnapshot.clear();
+    this.atsLock.writeLock().unlock();
   }
 
   public void add(Cell cell) {
@@ -39,6 +56,7 @@ public class DPAreaOfTS {
     this.atsLock.writeLock().lock();
     for (Cell cell : this.transitStoreArea.getCellSet()) {
       result.add(cell);
+      this.transitStoreAreaSnapshot.put(cell,cell);
     }
     this.transitStoreArea = SegmentFactory.instance().createMutableSegment(this.conf,
       store.getComparator(), null);

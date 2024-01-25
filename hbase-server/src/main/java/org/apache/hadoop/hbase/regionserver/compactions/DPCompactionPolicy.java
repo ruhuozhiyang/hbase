@@ -2,7 +2,7 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.regionserver.DPAreaOfTS;
+import org.apache.hadoop.hbase.regionserver.DPTransitStoreArea;
 import org.apache.hadoop.hbase.regionserver.DPInformationProvider;
 import org.apache.hadoop.hbase.regionserver.DPStoreConfig;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
@@ -176,7 +176,7 @@ public class DPCompactionPolicy extends CompactionPolicy {
      * @return result of the compacting process.
      */
     public List<Path> execute(DPCompactor compactor, ThroughputController throughputController,
-      User user, DPAreaOfTS areaOfTransitStore) throws IOException {
+      User user, DPTransitStoreArea areaOfTransitStore) throws IOException {
       return compactor.compact(this.request, this.dPBoundaries, this.majorRangeFromRow,
         this.majorRangeToRow, throughputController, user, areaOfTransitStore);
     }

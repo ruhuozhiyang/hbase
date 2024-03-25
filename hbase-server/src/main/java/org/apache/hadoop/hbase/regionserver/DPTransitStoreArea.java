@@ -5,14 +5,13 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.yetus.audience.InterfaceAudience;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.NavigableMap;
-import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 @InterfaceAudience.Private
 public class DPTransitStoreArea {
   private volatile MutableSegment transitStoreArea;
-  private volatile NavigableMap<Cell, Cell> transitStoreAreaSnapshot;
+  private List<Cell> transitStoreAreaSnapshot;
   private HStore store;
   private Configuration conf;
   private final ReentrantReadWriteLock atsLock = new ReentrantReadWriteLock();
@@ -22,7 +21,7 @@ public class DPTransitStoreArea {
     this.conf = conf;
     this.transitStoreArea = SegmentFactory.instance().createMutableSegment(this.conf,
       this.store.getComparator(), null);
-    this.transitStoreAreaSnapshot = new ConcurrentSkipListMap<>(this.store.getComparator().getSimpleComparator());
+    this.transitStoreAreaSnapshot = new ArrayList<>();
   }
 
   public int getCellCount() {
@@ -32,9 +31,9 @@ public class DPTransitStoreArea {
     return cellCount;
   }
 
-  public NavigableMap<Cell, Cell> getTransitStoreAreaSnapshot() {
+  public List<Cell> getTransitStoreAreaSnapshot() {
     this.atsLock.readLock().lock();
-    final NavigableMap<Cell, Cell> tSAS = transitStoreAreaSnapshot;
+    final List<Cell> tSAS = new ArrayList<>(transitStoreAreaSnapshot);
     this.atsLock.readLock().unlock();
     return tSAS;
   }
@@ -56,8 +55,8 @@ public class DPTransitStoreArea {
     this.atsLock.writeLock().lock();
     for (Cell cell : this.transitStoreArea.getCellSet()) {
       result.add(cell);
-      this.transitStoreAreaSnapshot.put(cell,cell);
     }
+    this.transitStoreAreaSnapshot.addAll(result);
     this.transitStoreArea = SegmentFactory.instance().createMutableSegment(this.conf,
       store.getComparator(), null);
     this.atsLock.writeLock().unlock();

@@ -28,7 +28,7 @@ public class SWCompactionPolicy extends RatioBasedCompactionPolicy {
     StoreConfigInformation storeConfigInfo) {
     super(conf, storeConfigInfo);
     compactionRecordFile = new File(conf.get(COMPACTION_STATUS_RECORD_PATH,
-      "/tmp/better-compaction-record"));
+      "/tmp/sw-compaction-record"));
     if (!compactionRecordFile.exists()) {
       try {
         compactionRecordFile.createNewFile();

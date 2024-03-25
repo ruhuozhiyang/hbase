@@ -158,7 +158,7 @@ public class DPClusterAnalysis {
       if ((startInsertPoint == endInsertPoint) && (startInsertPoint % 2 == 0)) {
         if (endInsertPoint == 0) {
           final byte[] boundary0 = this.newDPBoundaries.get(0);
-          if ((boundary0[compareIndex] & 0xFF) <= 2) {
+          if ((boundary0[compareIndex] & 0xFF) <= 50) {
             byte[] boundary00 = new byte[boundary0.length];
             System.arraycopy(boundary0, 0, boundary00, 0, r.length);
             boundary00[boundary00.length - 1] = (byte) ((boundary00[boundary00.length - 1] & 0xFF) - 1);
@@ -169,7 +169,7 @@ public class DPClusterAnalysis {
         }
         if (startInsertPoint == this.newDPBoundaries.size()) {
           final byte[] boundary0 = this.newDPBoundaries.get(this.newDPBoundaries.size() - 1);
-          if ((boundary0[compareIndex] & 0xFF) >= 8) {
+          if ((boundary0[compareIndex] & 0xFF) >= 56) {
             byte[] boundary00 = new byte[boundary0.length];
             System.arraycopy(boundary0, 0, boundary00, 0, r.length);
             boundary00[boundary00.length - 1] = (byte) ((boundary00[boundary00.length - 1] & 0xFF) + 1);

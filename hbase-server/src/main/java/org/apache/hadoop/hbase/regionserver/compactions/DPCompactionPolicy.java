@@ -15,9 +15,14 @@ import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 
 @InterfaceAudience.Private
@@ -25,12 +30,21 @@ public class DPCompactionPolicy extends CompactionPolicy {
   private final static Logger LOG = LoggerFactory.getLogger(DPCompactionPolicy.class);
   private final ExploringCompactionPolicy compactionPolicyInDP;
   private final DPStoreConfig dpStoreConfig;
+  private final File compactionRecordFile;
 
   public DPCompactionPolicy(Configuration conf, StoreConfigInformation storeConfigInfo,
     DPStoreConfig dpStoreConfig) {
     super(conf, storeConfigInfo);
     this.dpStoreConfig = dpStoreConfig;
     this.compactionPolicyInDP = new ExploringCompactionPolicy(conf, storeConfigInfo);
+    compactionRecordFile = new File("/tmp/dp-compaction-record");
+    if (!compactionRecordFile.exists()) {
+      try {
+        compactionRecordFile.createNewFile();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    }
   }
 
   public List<HStoreFile> preSelectFilesForCoprocessor(DPInformationProvider di,
@@ -77,6 +91,7 @@ public class DPCompactionPolicy extends CompactionPolicy {
       DPCompactionRequest request =
         new DPCompactionRequest(allFiles, di.getDPBoundaries());
       request.getRequest().setAfterSplit(true);
+      sizeOfSSTInCompactionRecord("best", new ArrayList<>(allFiles));
       return request;
     }
     List<HStoreFile> l0Files = di.getLevel0Files();
@@ -122,9 +137,13 @@ public class DPCompactionPolicy extends CompactionPolicy {
     List<HStoreFile> l0Files = di.getLevel0Files();
     ConcatenatedLists<HStoreFile> sfs = new ConcatenatedLists<>();
     sfs.addSublist(dPFilesToCompact);
+    List<HStoreFile> dPFilesForLog = new ArrayList<>();
+    dPFilesForLog.addAll(dPFilesToCompact);
     if (includeL0) {
       sfs.addSublist(l0Files);
+      dPFilesForLog.addAll(l0Files);
     }
+    sizeOfSSTInCompactionRecord("best", dPFilesForLog);
     DPCompactionRequest req = new DPCompactionRequest(sfs, di.getDPBoundaries());
     if (dPFilesToCompact.size() == dPartitions.get(bqIndex).size() && includeL0) {
       req.setMajorRange(di.getStartRow(bqIndex), di.getEndRow(bqIndex));
@@ -201,6 +220,25 @@ public class DPCompactionPolicy extends CompactionPolicy {
     public void setMajorRange(byte[] startRow, byte[] endRow) {
       this.majorRangeFromRow = startRow;
       this.majorRangeToRow = endRow;
+    }
+  }
+
+  private void sizeOfSSTInCompactionRecord(String flag, List<HStoreFile> bestSelection) {
+    try {
+      SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH:mm:ss");
+      BufferedWriter writer = new BufferedWriter(new FileWriter(compactionRecordFile, true));
+      StringBuilder line = new StringBuilder();
+      line.append(formatter.format(new Date()) + flag);
+      for (int i = 0; i < bestSelection.size(); i++) {
+        line.append(" ");
+        line.append(bestSelection.get(i).getReader().length());
+      }
+      line.append("\n");
+      writer.write(line.toString());
+      writer.flush();
+      writer.close();
+    } catch (IOException e) {
+      LOG.warn("Failed to record the compaction info for [{}].", e.getMessage(), e);
     }
   }
 }

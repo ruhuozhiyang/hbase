@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NavigableMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 @InterfaceAudience.Private
@@ -67,9 +68,10 @@ public class DPStoreFlusher extends StoreFlusher{
 
       synchronized (flushLock) {
         performFlush(scanner, mw, throughputController);
-        if (req instanceof UpdateBoundaryAndDPFlushRequest) {
-          ((UpdateBoundaryAndDPFlushRequest) req).flushTransitStoreArea(areaOfTransitStore, mw);
-        }
+//        if (req instanceof UpdateBoundaryAndDPFlushRequest) {
+//          final UpdateBoundaryAndDPFlushRequest ubReq = (UpdateBoundaryAndDPFlushRequest) req;
+//          ubReq.flushTransitStoreArea(areaOfTransitStore, mw);
+//        }
         result = mw.commitWriters(cacheFlushSeqNum, false);
         success = true;
       }
@@ -175,9 +177,9 @@ public class DPStoreFlusher extends StoreFlusher{
 
     public void flushTransitStoreArea(DPTransitStoreArea areaOfTransitStore,
       DPBoundaryMultiFileWriter mw) throws IOException {
-      NavigableMap<Cell, Cell> sortedCellsInATS = areaOfTransitStore.getTransitStoreAreaSnapshot();
+      final List<Cell> sortedCellsInATS = areaOfTransitStore.getTransitStoreAreaSnapshot();
       if (sortedCellsInATS != null) {
-        final Iterator<Cell> sortedCells = sortedCellsInATS.values().iterator();
+        final Iterator<Cell> sortedCells = sortedCellsInATS.iterator();
         while (sortedCells.hasNext()) {
           mw.append(sortedCells.next());
         }

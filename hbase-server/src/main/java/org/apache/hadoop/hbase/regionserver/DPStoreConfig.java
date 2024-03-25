@@ -16,9 +16,9 @@ public class DPStoreConfig {
    */
   public static final String MIN_FILES_KEY = "hbase.store.dPartition.compaction.minFiles";
   public static final String MAX_FILES_KEY = "hbase.store.dPartition.compaction.maxFiles";
-  public static final String MIN_FILES_L0_KEY = "hbase.store.stripe.compaction.minFilesL0";
+  public static final String MIN_FILES_L0_KEY = "hbase.store.dPartition.compaction.minFilesL0";
   public static final String MAX_REGION_SPLIT_IMBALANCE_KEY =
-    "hbase.store.stripe.region.split.max.imbalance";
+    "hbase.store.dPartition.region.split.max.imbalance";
   private final int dPartitionCompactMinFiles;
   private final int dPartitionCompactMaxFiles;
   private final float maxRegionSplitImbalance;
